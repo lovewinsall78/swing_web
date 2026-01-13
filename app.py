@@ -289,16 +289,7 @@ if run:
     df = pd.DataFrame(rows)
     
     df = df.sort_values(["candidate", "score"], ascending=[False, False]).reset_index(drop=True)
-df_view = df.copy()
-kr_mask = df_view["market"] == "KR"
 
-def fmt_krw(x):
-    if x is None or pd.isna(x):
-        return ""
-    return f"{int(round(x)):,}"
-
-for col in ["close", "stop", "target(2R)"]:
-    df_view.loc[kr_mask, col] = df_view.loc[kr_mask, col].apply(fmt_krw)
     st.subheader("결과")
     st.dataframe(df, use_container_width=True)
 
