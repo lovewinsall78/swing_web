@@ -261,25 +261,118 @@ st.set_page_config(page_title="Swing Scanner", layout="wide")
 st.title("웹 티커 입력 → 스윙 판단(O/X) + 주문표 엑셀")
 
 with st.sidebar:
-    st.header("설정(초보용 기본값)")
+    st.header("스윙 전략 설정 (초보자 권장값)")
+
     params = {}
-    params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
-    st.write( "최근 주가의 단기 흐름을 보는 이동평균입니다.\n"
-        "- 값 ↓ : 신호가 빠르나 잦은 실패 가능\n"
-        "- 값 ↑ : 신호가 느리지만 안정적\n"
-        "보통 **10~30일**, 기본값 20 권장")
-    params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
-    st.write("중·장기 추세 기준선입니다.\n"
-        "단기선(MA_FAST)이 이 선 위에 있으면 상승 추세로 판단합니다.\n"
-        "보통 **50~120일**, 기본값 60")
-    params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
-    params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"])
-    params["VOL_SPIKE"] = st.number_input("VOL_SPIKE", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05)
-    params["ATR_PCT_MIN"] = st.number_input("ATR_PCT_MIN", 0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]), step=0.001, format="%.3f")
-    params["ATR_PCT_MAX"] = st.number_input("ATR_PCT_MAX", 0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]), step=0.001, format="%.3f")
-    params["ACCOUNT_SIZE"] = st.number_input("ACCOUNT_SIZE", 100000, 1000000000, DEFAULTS["ACCOUNT_SIZE"], step=100000)
-    params["RISK_PER_TRADE"] = st.number_input("RISK_PER_TRADE", 0.001, 0.05, float(DEFAULTS["RISK_PER_TRADE"]), step=0.001, format="%.3f")
-    params["STOP_ATR_MULT"] = st.number_input("STOP_ATR_MULT", 0.5, 5.0, float(DEFAULTS["STOP_ATR_MULT"]), step=0.1)
+
+    st.markdown("### 추세 지표 (이동평균)")
+
+    params["MA_FAST"] = st.number_input(
+        "MA_FAST (단기 이동평균)",
+        5, 200, DEFAULTS["MA_FAST"]
+    )
+    st.write(
+        "최근 주가의 단기 흐름을 보는 이동평균 기간입니다.\n"
+        "- 값이 작을수록 신호는 빠르지만 잦은 실패 가능\n"
+        "- 값이 클수록 신호는 느리지만 안정적\n"
+        "일반적으로 10~30일을 사용하며 기본값 20은 무난합니다."
+    )
+
+    params["MA_SLOW"] = st.number_input(
+        "MA_SLOW (장기 이동평균)",
+        10, 300, DEFAULTS["MA_SLOW"]
+    )
+    st.write(
+        "중·장기 추세를 판단하는 기준 이동평균입니다.\n"
+        "단기 이동평균(MA_FAST)이 이 값 위에 있으면 상승 추세로 판단합니다.\n"
+        "보통 50~120일을 사용하며 기본값은 60입니다."
+    )
+
+    st.markdown("---")
+    st.markdown("### 거래량 / 변동성 조건")
+
+    params["VOL_LOOKBACK"] = st.number_input(
+        "VOL_LOOKBACK (거래량 평균 기간)",
+        5, 200, DEFAULTS["VOL_LOOKBACK"]
+    )
+    st.write(
+        "평균 거래량을 계산하는 기간입니다.\n"
+        "현재 거래량이 이 평균 대비 얼마나 증가했는지 판단하는 데 사용됩니다."
+    )
+
+    params["VOL_SPIKE"] = st.number_input(
+        "VOL_SPIKE (거래량 급증 기준)",
+        1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]),
+        step=0.05
+    )
+    st.write(
+        "현재 거래량이 평균 대비 몇 배 이상일 때 진입 후보로 볼지 정합니다.\n"
+        "예: 1.5는 평균 거래량 대비 150% 이상을 의미합니다."
+    )
+
+    params["ATR_PERIOD"] = st.number_input(
+        "ATR_PERIOD (ATR 계산 기간)",
+        5, 100, DEFAULTS["ATR_PERIOD"]
+    )
+    st.write(
+        "ATR은 주가의 평균 변동폭을 나타내는 지표입니다.\n"
+        "값이 클수록 주가 변동이 큰 종목입니다."
+    )
+
+    params["ATR_PCT_MIN"] = st.number_input(
+        "ATR_PCT_MIN (최소 변동성)",
+        0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]),
+        step=0.001, format="%.3f"
+    )
+    st.write(
+        "너무 움직임이 없는 종목을 제외하기 위한 최소 변동성 기준입니다."
+    )
+
+    params["ATR_PCT_MAX"] = st.number_input(
+        "ATR_PCT_MAX (최대 변동성)",
+        0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]),
+        step=0.001, format="%.3f"
+    )
+    st.write(
+        "변동성이 지나치게 큰 고위험 종목을 제외하기 위한 상한선입니다."
+    )
+
+    st.markdown("---")
+    st.markdown("### 자금 관리")
+
+    params["ACCOUNT_SIZE"] = st.number_input(
+        "ACCOUNT_SIZE (총 투자금)",
+        100_000, 1_000_000_000,
+        DEFAULTS["ACCOUNT_SIZE"],
+        step=100_000
+    )
+    st.write(
+        "가상의 전체 계좌 금액입니다.\n"
+        "실제 주문이 아니라 포지션 크기 계산에만 사용됩니다."
+    )
+
+    params["RISK_PER_TRADE"] = st.number_input(
+        "RISK_PER_TRADE (1회 최대 손실 비율)",
+        0.001, 0.05,
+        float(DEFAULTS["RISK_PER_TRADE"]),
+        step=0.001, format="%.3f"
+    )
+    st.write(
+        "한 종목에서 감수할 최대 손실 비율입니다.\n"
+        "예: 0.01은 1% 손실을 의미합니다."
+    )
+
+    params["STOP_ATR_MULT"] = st.number_input(
+        "STOP_ATR_MULT (손절 ATR 배수)",
+        0.5, 5.0,
+        float(DEFAULTS["STOP_ATR_MULT"]),
+        step=0.1
+    )
+    st.write(
+        "손절 가격을 ATR 기준으로 얼마나 여유 있게 둘지 정합니다.\n"
+        "보통 1.5~2.0 범위를 많이 사용합니다."
+    )
+
 
 st.write("**입력 방법**: KR은 6자리 코드(예: `005930`), US는 티커(예: `SPY`). 콤마/줄바꿈/공백 모두 가능.")
 raw = st.text_area("티커 입력", value="005930 000660\nSPY QQQ", height=120)
