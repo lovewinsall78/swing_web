@@ -263,7 +263,8 @@ st.title("웹 티커 입력 → 스윙 판단(O/X) + 주문표 엑셀")
 with st.sidebar:
     st.header("설정(초보용 기본값)")
     params = {}
-    params["MA_FAST"] = st.number_input("MA_FAST", 5, 200, DEFAULTS["MA_FAST"])
+    params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
+st.caption("📌 단기 추세를 보는 이동평균 기간입니다. 보통 10~30일을 많이 씁니다. (값이 작을수록 더 민감)")
     params["MA_SLOW"] = st.number_input("MA_SLOW", 10, 300, DEFAULTS["MA_SLOW"])
     params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK", 5, 200, DEFAULTS["VOL_LOOKBACK"])
     params["ATR_PERIOD"] = st.number_input("ATR_PERIOD", 5, 100, DEFAULTS["ATR_PERIOD"])
