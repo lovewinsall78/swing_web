@@ -291,6 +291,19 @@ if run:
     df = df.sort_values(["candidate", "score"], ascending=[False, False]).reset_index(drop=True)
 
     st.subheader("결과")
+    # ===== KR 종목 숫자 천단위 콤마 (표시용) =====
+df_view = df.copy()
+
+kr_mask = df_view["market"] == "KR"
+
+def fmt_krw(x):
+    if x is None or pd.isna(x):
+        return ""
+    return f"{int(round(x)):,}"
+
+for col in ["close", "stop", "target(2R)"]:
+    df_view.loc[kr_mask, col] = df_view.loc[kr_mask, col].apply(fmt_krw)
+
     st.dataframe(df, use_container_width=True)
 
     n_cand = int((df["candidate"] == 1).sum())
