@@ -264,7 +264,10 @@ with st.sidebar:
     st.header("설정(초보용 기본값)")
     params = {}
     params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
-    st.write("**입력 방법**: KR은 6자리 코드(예: `005930`), US는 티커(예: `SPY`). 콤마/줄바꿈/공백 모두 가능.")
+    st.write( "최근 주가의 단기 흐름을 보는 이동평균입니다.\n"
+        "- 값 ↓ : 신호가 빠르나 잦은 실패 가능\n"
+        "- 값 ↑ : 신호가 느리지만 안정적\n"
+        "보통 **10~30일**, 기본값 20 권장")
     params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
     params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
     params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"])
