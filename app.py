@@ -264,9 +264,10 @@ with st.sidebar:
     st.header("설정(초보용 기본값)")
     params = {}
     params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
+    st.write("**입력 방법**: KR은 6자리 코드(예: `005930`), US는 티커(예: `SPY`). 콤마/줄바꿈/공백 모두 가능.")
     params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
-    params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK", 5, 200, DEFAULTS["VOL_LOOKBACK"])
-    params["ATR_PERIOD"] = st.number_input("ATR_PERIOD", 5, 100, DEFAULTS["ATR_PERIOD"])
+    params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
+    params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"])
     params["VOL_SPIKE"] = st.number_input("VOL_SPIKE", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05)
     params["ATR_PCT_MIN"] = st.number_input("ATR_PCT_MIN", 0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]), step=0.001, format="%.3f")
     params["ATR_PCT_MAX"] = st.number_input("ATR_PCT_MAX", 0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]), step=0.001, format="%.3f")
