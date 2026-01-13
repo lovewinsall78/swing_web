@@ -269,6 +269,10 @@ with st.sidebar:
         "- 값 ↑ : 신호가 느리지만 안정적\n"
         "보통 **10~30일**, 기본값 20 권장")
     params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
+    st.write(
+        "중·장기 추세 기준선입니다.\n"
+        "단기선(MA_FAST)이 이 선 위에 있으면 상승 추세로 판단합니다.\n"
+        "👉 보통 **50~120일**, 기본값 60"
     params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
     params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"])
     params["VOL_SPIKE"] = st.number_input("VOL_SPIKE", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05)
