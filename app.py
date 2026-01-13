@@ -264,7 +264,8 @@ with st.sidebar:
     st.header("설정(초보용 기본값)")
     params = {}
     params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
-    params["MA_SLOW"] = st.number_input("MA_SLOW", 10, 300, DEFAULTS["MA_SLOW"])
+    params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
+st.caption("장기 추세 기준선입니다. 보통 50~120일을 많이 씁니다. (단기선이 장기선 위면 상승 추세로 판단)")
     params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK", 5, 200, DEFAULTS["VOL_LOOKBACK"])
     params["ATR_PERIOD"] = st.number_input("ATR_PERIOD", 5, 100, DEFAULTS["ATR_PERIOD"])
     params["VOL_SPIKE"] = st.number_input("VOL_SPIKE", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05)
