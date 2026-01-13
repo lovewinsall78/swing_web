@@ -90,10 +90,59 @@ def position_size(entry, atr, ACCOUNT_SIZE, RISK_PER_TRADE, STOP_ATR_MULT):
     return max(0, qty), float(stop_price)
 
 def load_us(ticker: str):
-    df = yf.download(ticker, period="2y", progress=False)
-    df = df.rename(columns=str.title)
-    df = df[["Open","High","Low","Close","Volume"]].dropna()
+    df = yf.download(
+        ticker,
+        period="2y",
+        interval="1d",
+        auto_adjust=False,
+        progress=False,
+        group_by="column",
+        threads=False,
+    )
+
+    # ✅ MultiIndex(필드×티커) 또는 (티커×필드) 처리
+    if isinstance(df.columns, pd.MultiIndex):
+        lv0 = df.columns.get_level_values(0)
+        lv1 = df.columns.get_level_values(1)
+
+        # 케이스 A: (티커, 필드) 형태면 df[ticker]가 바로 OHLCV
+        if ticker in lv0:
+            df = df[ticker]
+
+        # 케이스 B: (필드, 티커) 형태면 xs로 ticker만 뽑기
+        elif ticker in lv1:
+            df = df.xs(ticker, axis=1, level=1)
+
+        # 그래도 애매하면(티커 1개만 있을 때) 가장 안전한 방식: 첫 번째 ticker를 선택
+        else:
+            # level 중 ticker 후보가 있는 쪽을 찾아 첫 번째로 선택
+            uniq0 = list(pd.unique(lv0))
+            uniq1 = list(pd.unique(lv1))
+            if len(uniq0) > 1 and len(uniq1) <= 10:
+                # (필드, 티커)일 가능성
+                df = df.xs(uniq1[0], axis=1, level=1)
+            elif len(uniq1) > 1 and len(uniq0) <= 10:
+                # (티커, 필드)일 가능성
+                df = df[uniq0[0]]
+            else:
+                # 최후의 수단: level0만 남기면 Close가 중복되어 또 터지므로 금지
+                raise ValueError(f"Unexpected MultiIndex columns: {df.columns}")
+
+    # 컬럼명 통일
+    df = df.rename(columns=lambda c: str(c).title())
+
+    # Close 없고 Adj Close만 있으면 대체
+    if "Close" not in df.columns and "Adj Close" in df.columns:
+        df["Close"] = df["Adj Close"]
+
+    keep = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [c for c in keep if c not in df.columns]
+    if missing:
+        raise ValueError(f"US data missing columns: {missing} / columns={list(df.columns)}")
+
+    df = df[keep].dropna()
     return df
+
 
 def load_kr(code: str):
     end = datetime.now().strftime("%Y-%m-%d")
