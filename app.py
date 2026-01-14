@@ -176,6 +176,58 @@ def analyze_one(ticker: str, params: dict):
             ATR_PCT_MIN=params["ATR_PCT_MIN"],
             ATR_PCT_MAX=params["ATR_PCT_MAX"],
         )
+
+        def build_reason_table(last, params):
+    # NaN 방어
+    def safe(v):
+        return None if pd.isna(v) else float(v)
+
+    close = safe(last.get("Close", np.nan))
+    ma_fast = safe(last.get("MA_FAST", np.nan))
+    ma_slow = safe(last.get("MA_SLOW", np.nan))
+    vol_ratio = safe(last.get("VOL_RATIO", np.nan))
+    atr_pct = safe(last.get("ATR_PCT", np.nan))
+
+    rows = []
+
+    # 1) 추세
+    c1 = (ma_fast is not None) and (ma_slow is not None) and (ma_fast > ma_slow)
+    c2 = (close is not None) and (ma_fast is not None) and (close > ma_fast)
+    rows.append({
+        "조건": "추세: MA_FAST > MA_SLOW",
+        "현재값": f"{ma_fast:.2f} > {ma_slow:.2f}" if (ma_fast is not None and ma_slow is not None) else "데이터 부족",
+        "기준": "단기선이 장기선 위",
+        "통과": bool(c1)
+    })
+    rows.append({
+        "조건": "추세: Close > MA_FAST",
+        "현재값": f"{close:.2f} > {ma_fast:.2f}" if (close is not None and ma_fast is not None) else "데이터 부족",
+        "기준": "종가가 단기선 위",
+        "통과": bool(c2)
+    })
+
+    # 2) 거래량
+    c3 = (vol_ratio is not None) and (vol_ratio >= float(params["VOL_SPIKE"]))
+    rows.append({
+        "조건": "거래량: VOL_RATIO >= VOL_SPIKE",
+        "현재값": f"{vol_ratio:.2f}" if vol_ratio is not None else "데이터 부족",
+        "기준": f">= {float(params['VOL_SPIKE']):.2f}",
+        "통과": bool(c3)
+    })
+
+    # 3) 변동성(ATR%)
+    atr_min = float(params["ATR_PCT_MIN"])
+    atr_max = float(params["ATR_PCT_MAX"])
+    c4 = (atr_pct is not None) and (atr_min <= atr_pct <= atr_max)
+    rows.append({
+        "조건": "변동성: ATR_PCT_MIN <= ATR_PCT <= ATR_PCT_MAX",
+        "현재값": f"{atr_pct*100:.2f}%" if atr_pct is not None else "데이터 부족",
+        "기준": f"{atr_min*100:.2f}% ~ {atr_max*100:.2f}%",
+        "통과": bool(c4)
+    })
+
+    return pd.DataFrame(rows)
+
         sc = score_row(last) if cand == 1 else 0
 
         entry = float(last["Close"])
