@@ -6,9 +6,8 @@ import yfinance as yf
 from pykrx import stock as krx
 import streamlit as st
 from datetime import datetime, timedelta
-from openpyxl.styles import numbers
 
-
+# ---------------- Defaults ----------------
 DEFAULTS = dict(
     HOLD_DAYS=20,
     MA_FAST=20,
@@ -24,7 +23,7 @@ DEFAULTS = dict(
     TOP_N=10
 )
 
-# ---------------- Utils ----------------
+# ---------------- Helpers ----------------
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", x.strip()))
 
@@ -68,12 +67,15 @@ def score_row(last):
     score = 0
     if last["MA_FAST"] > last["MA_SLOW"]:
         score += 40
+
     vr = last.get("VOL_RATIO", np.nan)
     if pd.notna(vr):
         score += int(min(25, max(0, (vr - 1.0) * 20)))
+
     r20 = last.get("RET_20", np.nan)
     if pd.notna(r20):
         score += int(min(20, max(0, r20 * 200)))
+
     ap = last.get("ATR_PCT", np.nan)
     if pd.notna(ap):
         if ap > 0.045:
@@ -82,6 +84,7 @@ def score_row(last):
             score -= 5
         else:
             score += 10
+
     return int(score)
 
 def position_size(entry, atr, ACCOUNT_SIZE, RISK_PER_TRADE, STOP_ATR_MULT):
@@ -93,58 +96,7 @@ def position_size(entry, atr, ACCOUNT_SIZE, RISK_PER_TRADE, STOP_ATR_MULT):
     stop_price = entry - stop_dist
     return max(0, qty), float(stop_price)
 
-# ✅ 근거 테이블(조건 통과 여부) - 전역 함수로 두어 IndentationError 방지
-def build_reason_table(last, params):
-    def safe(v):
-        return None if pd.isna(v) else float(v)
-
-    close = safe(last.get("Close", np.nan))
-    ma_fast = safe(last.get("MA_FAST", np.nan))
-    ma_slow = safe(last.get("MA_SLOW", np.nan))
-    vol_ratio = safe(last.get("VOL_RATIO", np.nan))
-    atr_pct = safe(last.get("ATR_PCT", np.nan))
-
-    rows = []
-
-    # 1) 추세
-    c1 = (ma_fast is not None) and (ma_slow is not None) and (ma_fast > ma_slow)
-    c2 = (close is not None) and (ma_fast is not None) and (close > ma_fast)
-    rows.append({
-        "조건": "추세: MA_FAST > MA_SLOW",
-        "현재값": f"{ma_fast:,.2f} > {ma_slow:,.2f}" if (ma_fast is not None and ma_slow is not None) else "데이터 부족",
-        "기준": "단기선이 장기선 위",
-        "통과": bool(c1)
-    })
-    rows.append({
-        "조건": "추세: Close > MA_FAST",
-        "현재값": f"{close:,.2f} > {ma_fast:,.2f}" if (close is not None and ma_fast is not None) else "데이터 부족",
-        "기준": "종가가 단기선 위",
-        "통과": bool(c2)
-    })
-
-    # 2) 거래량
-    c3 = (vol_ratio is not None) and (vol_ratio >= float(params["VOL_SPIKE"]))
-    rows.append({
-        "조건": "거래량: VOL_RATIO >= VOL_SPIKE",
-        "현재값": f"{vol_ratio:,.2f}" if vol_ratio is not None else "데이터 부족",
-        "기준": f">= {float(params['VOL_SPIKE']):,.2f}",
-        "통과": bool(c3)
-    })
-
-    # 3) 변동성(ATR%)
-    atr_min = float(params["ATR_PCT_MIN"])
-    atr_max = float(params["ATR_PCT_MAX"])
-    c4 = (atr_pct is not None) and (atr_min <= atr_pct <= atr_max)
-    rows.append({
-        "조건": "변동성: ATR_PCT_MIN <= ATR_PCT <= ATR_PCT_MAX",
-        "현재값": f"{atr_pct*100:,.2f}%" if atr_pct is not None else "데이터 부족",
-        "기준": f"{atr_min*100:,.2f}% ~ {atr_max*100:,.2f}%",
-        "통과": bool(c4)
-    })
-
-    return pd.DataFrame(rows)
-
-# ---------------- Data Load ----------------
+# ---------------- Data Loaders ----------------
 def load_us(ticker: str):
     df = yf.download(
         ticker,
@@ -156,29 +108,27 @@ def load_us(ticker: str):
         threads=False,
     )
 
-    # ✅ MultiIndex(필드×티커) 또는 (티커×필드) 처리
+    # MultiIndex 처리
     if isinstance(df.columns, pd.MultiIndex):
         lv0 = df.columns.get_level_values(0)
         lv1 = df.columns.get_level_values(1)
 
-        # 케이스 A: (티커, 필드)
-        if ticker in lv0:
+        if ticker in lv0:          # (티커, 필드)
             df = df[ticker]
-        # 케이스 B: (필드, 티커)
-        elif ticker in lv1:
+        elif ticker in lv1:        # (필드, 티커)
             df = df.xs(ticker, axis=1, level=1)
         else:
-            # 최후의 수단: 첫 ticker를 골라서 슬라이스
+            # 최후의 수단: 1개만 있는 경우가 많으므로 첫 번째 블록 선택
+            # 하지만 중복 컬럼이 생기면 폭발하므로 "ticker" 축을 골라야 함
             uniq0 = list(pd.unique(lv0))
             uniq1 = list(pd.unique(lv1))
-            if len(uniq1) >= 1 and ("Close" in uniq0 or "close" in [str(x).lower() for x in uniq0]):
+            if len(uniq0) > 1 and len(uniq1) <= 10:
                 df = df.xs(uniq1[0], axis=1, level=1)
-            elif len(uniq0) >= 1:
+            elif len(uniq1) > 1 and len(uniq0) <= 10:
                 df = df[uniq0[0]]
             else:
                 raise ValueError(f"Unexpected MultiIndex columns: {df.columns}")
 
-    # 컬럼명 통일
     df = df.rename(columns=lambda c: str(c).title())
 
     # Close 없고 Adj Close만 있으면 대체
@@ -201,7 +151,7 @@ def load_kr(code: str):
     df = df[["Open","High","Low","Close","Volume"]].dropna()
     return df
 
-# ---------------- Analyzer ----------------
+# ---------------- Analysis ----------------
 def analyze_one(ticker: str, params: dict):
     try:
         if is_kr_code(ticker):
@@ -218,6 +168,7 @@ def analyze_one(ticker: str, params: dict):
             VOL_LOOKBACK=params["VOL_LOOKBACK"],
             ATR_PERIOD=params["ATR_PERIOD"],
         )
+
         last = df.iloc[-1]
 
         cand = rule_signal(
@@ -226,8 +177,6 @@ def analyze_one(ticker: str, params: dict):
             ATR_PCT_MIN=params["ATR_PCT_MIN"],
             ATR_PCT_MAX=params["ATR_PCT_MAX"],
         )
-
-        reason_df = build_reason_table(last, params)
 
         sc = score_row(last) if cand == 1 else 0
 
@@ -238,6 +187,7 @@ def analyze_one(ticker: str, params: dict):
             RISK_PER_TRADE=params["RISK_PER_TRADE"],
             STOP_ATR_MULT=params["STOP_ATR_MULT"],
         )
+
         target = entry + 2 * (entry - stop) if (not np.isnan(stop)) else np.nan
 
         return {
@@ -246,20 +196,16 @@ def analyze_one(ticker: str, params: dict):
             "O/X": "O" if cand == 1 else "X",
             "candidate": int(cand),
             "score": int(sc),
-
-            "close": float(round(entry, 2)),
-            "stop": (np.nan if np.isnan(stop) else float(round(stop, 2))),
-            "target(2R)": (np.nan if np.isnan(target) else float(round(target, 2))),
+            "close": float(entry),
+            "stop": (None if np.isnan(stop) else float(stop)),
+            "target(2R)": (None if np.isnan(target) else float(target)),
             "qty": int(qty),
-
-            "vol_ratio": (np.nan if pd.isna(last["VOL_RATIO"]) else float(round(float(last["VOL_RATIO"]), 2))),
-            "atr_pct(%)": (np.nan if pd.isna(last["ATR_PCT"]) else float(round(float(last["ATR_PCT"]) * 100, 2))),
-            "ret_20(%)": (np.nan if pd.isna(last["RET_20"]) else float(round(float(last["RET_20"]) * 100, 2))),
+            "vol_ratio": (None if pd.isna(last["VOL_RATIO"]) else float(last["VOL_RATIO"])),
+            "atr_pct(%)": (None if pd.isna(last["ATR_PCT"]) else float(last["ATR_PCT"])*100),
+            "ret_20(%)": (None if pd.isna(last["RET_20"]) else float(last["RET_20"])*100),
             "date": str(df.index[-1].date()),
-            "reason": reason_df.to_dict(orient="records"),
             "error": ""
         }
-
     except Exception as e:
         return {
             "market": "?",
@@ -267,182 +213,60 @@ def analyze_one(ticker: str, params: dict):
             "O/X": "X",
             "candidate": 0,
             "score": 0,
-            "close": np.nan,
-            "stop": np.nan,
-            "target(2R)": np.nan,
+            "close": None,
+            "stop": None,
+            "target(2R)": None,
             "qty": 0,
-            "vol_ratio": np.nan,
-            "atr_pct(%)": np.nan,
-            "ret_20(%)": np.nan,
+            "vol_ratio": None,
+            "atr_pct(%)": None,
+            "ret_20(%)": None,
             "date": "",
-            "reason": [],
             "error": str(e)
         }
 
-# ---------------- Excel ----------------
+# ---------------- Excel formatting (KRW/USD) ----------------
+def apply_currency_formats_openpyxl(ws):
+    """
+    시트에서:
+      - market 값이 KR이면 close/stop/target(2R) -> ₩#,##0
+      - market 값이 US이면 close/stop/target(2R) -> $#,##0.00
+    """
+    fmt_krw = u'₩#,##0'
+    fmt_usd = u'$#,##0.00'
+    price_cols = {"close", "stop", "target(2R)"}
+
+    # 헤더 찾기
+    header = {}
+    for col in range(1, ws.max_column + 1):
+        v = ws.cell(row=1, column=col).value
+        if isinstance(v, str):
+            header[v.strip()] = col
+
+    if "market" not in header:
+        return
+
+    market_col = header["market"]
+    price_col_idxs = [header[c] for c in price_cols if c in header]
+    if not price_col_idxs:
+        return
+
+    for r in range(2, ws.max_row + 1):
+        mkt = ws.cell(row=r, column=market_col).value
+        if mkt == "KR":
+            numfmt = fmt_krw
+        elif mkt == "US":
+            numfmt = fmt_usd
+        else:
+            continue
+
+        for c in price_col_idxs:
+            cell = ws.cell(row=r, column=c)
+            if isinstance(cell.value, (int, float)) and cell.value is not None:
+                cell.number_format = numfmt
+
 def build_excel(df_all: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # reason 컬럼은 엑셀에선 제외(리스트/오브젝트라 보기 불편)
-        df_export = df_all.drop(columns=["reason"], errors="ignore")
-        df_export.to_excel(writer, sheet_name="Signals_All", index=False)
-
-        df_cand = df_all[df_all["candidate"] == 1].copy()
-        if df_cand.empty:
-            df_cand = pd.DataFrame([{"note": "nottoday"}])
-        else:
-            df_cand = df_cand.drop(columns=["reason"], errors="ignore")
-        df_cand.to_excel(writer, sheet_name="Candidates", index=False)
-
-        def order_sheet(df, market):
-            d = df[(df["market"] == market) & (df["candidate"] == 1)].copy()
-            if d.empty:
-                return pd.DataFrame([{
-                    "market": market, "ticker": "nottoday", "action": "NONE",
-                    "qty": 0, "stop": "", "target(2R)": "", "note": "No candidates"
-                }])
-            d = d.sort_values("score", ascending=False).head(10)
-            d["qty_safe"] = (d["qty"] * 0.5).astype(int)
-            return pd.DataFrame({
-                "market": d["market"],
-                "ticker": d["ticker"],
-                "action": "BUY",
-                "qty": d["qty_safe"],
-                "stop": d["stop"],
-                "target(2R)": d["target(2R)"],
-                "note": ["Manual entry (M-STOCK)"] * len(d)
-            })
-
-        order_sheet(df_all, "KR").to_excel(writer, sheet_name="Order_KR", index=False)
-        order_sheet(df_all, "US").to_excel(writer, sheet_name="Order_US", index=False)
-
-    return output.getvalue()
-
-# ---------------- UI ----------------
-st.set_page_config(page_title="Swing Scanner", layout="wide")
-st.title("웹 티커 입력 → 스윙 판단(O/X) + 근거표 + 주문표 엑셀")
-
-with st.sidebar:
-    st.header("스윙 전략 설정 (초보자 권장값)")
-
-    params = {}
-
-    st.markdown("### 추세 지표 (이동평균)")
-    params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
-    st.write(
-        "최근 주가의 단기 흐름을 보는 이동평균 기간입니다.\n"
-        "- 값이 작을수록 신호는 빠르지만 잦은 실패 가능\n"
-        "- 값이 클수록 신호는 느리지만 안정적\n"
-        "일반적으로 10~30일을 사용하며 기본값 20은 무난합니다."
-    )
-
-    params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
-    st.write(
-        "중·장기 추세를 판단하는 기준 이동평균입니다.\n"
-        "단기 이동평균(MA_FAST)이 이 값 위에 있으면 상승 추세로 판단합니다.\n"
-        "보통 50~120일을 사용하며 기본값은 60입니다."
-    )
-
-    st.markdown("---")
-    st.markdown("### 거래량 / 변동성 조건")
-
-    params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
-    st.write(
-        "평균 거래량을 계산하는 기간입니다.\n"
-        "현재 거래량이 이 평균 대비 얼마나 증가했는지(VOL_RATIO) 판단하는 데 사용됩니다."
-    )
-
-    params["VOL_SPIKE"] = st.number_input("VOL_SPIKE (거래량 급증 기준)", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05)
-    st.write(
-        "현재 거래량이 평균 대비 몇 배 이상일 때 진입 후보로 볼지 정합니다.\n"
-        "예: 1.5는 평균 거래량 대비 150% 이상을 의미합니다."
-    )
-
-    params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"])
-    st.write(
-        "ATR은 주가의 평균 변동폭을 나타내는 지표입니다.\n"
-        "값이 클수록 주가 변동이 큰 종목입니다."
-    )
-
-    params["ATR_PCT_MIN"] = st.number_input("ATR_PCT_MIN (최소 변동성)", 0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]), step=0.001, format="%.3f")
-    st.write("너무 움직임이 없는(변동성 낮은) 종목을 제외하기 위한 최소 변동성 기준입니다.")
-
-    params["ATR_PCT_MAX"] = st.number_input("ATR_PCT_MAX (최대 변동성)", 0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]), step=0.001, format="%.3f")
-    st.write("변동성이 지나치게 큰(고위험) 종목을 제외하기 위한 상한선입니다.")
-
-    st.markdown("---")
-    st.markdown("### 자금 관리")
-
-    params["ACCOUNT_SIZE"] = st.number_input("ACCOUNT_SIZE (총 투자금)", 100_000, 1_000_000_000, DEFAULTS["ACCOUNT_SIZE"], step=100_000)
-    st.write("가상의 전체 계좌 금액입니다. 실제 주문이 아니라 포지션 크기 계산에만 사용됩니다.")
-
-    params["RISK_PER_TRADE"] = st.number_input("RISK_PER_TRADE (1회 최대 손실 비율)", 0.001, 0.05, float(DEFAULTS["RISK_PER_TRADE"]), step=0.001, format="%.3f")
-    st.write("한 종목에서 감수할 최대 손실 비율입니다. 예: 0.01은 1% 손실을 의미합니다.")
-
-    params["STOP_ATR_MULT"] = st.number_input("STOP_ATR_MULT (손절 ATR 배수)", 0.5, 5.0, float(DEFAULTS["STOP_ATR_MULT"]), step=0.1)
-    st.write("손절 가격을 ATR 기준으로 얼마나 여유 있게 둘지 정합니다. 보통 1.5~2.0 범위를 많이 사용합니다.")
-
-st.write("**입력 방법**: KR은 6자리 코드(예: `005930`), US는 티커(예: `SPY`). 콤마/줄바꿈/공백 모두 가능.")
-raw = st.text_area("티커 입력", value="005930 000660\nSPY QQQ", height=120)
-
-run = st.button("분석 실행")
-
-if run:
-    tickers = normalize_tickers(raw)
-    if not tickers:
-        st.warning("티커를 1개 이상 입력하세요.")
-        st.stop()
-
-    rows = [analyze_one(t, params) for t in tickers]
-    df = pd.DataFrame(rows)
-
-    df = df.sort_values(["candidate", "score"], ascending=[False, False]).reset_index(drop=True)
-
-    st.subheader("결과")
-
-    # ✅ 메인 테이블에는 reason(리스트) 숨기고, 숫자는 천단위 콤마로 표시
-    df_main = df.drop(columns=["reason"], errors="ignore")
-
-    st.dataframe(
-        df_main,
-        use_container_width=True,
-        column_config={
-            "close": st.column_config.NumberColumn("close", format="%,.2f"),
-            "stop": st.column_config.NumberColumn("stop", format="%,.2f"),
-            "target(2R)": st.column_config.NumberColumn("target(2R)", format="%,.2f"),
-            "qty": st.column_config.NumberColumn("qty", format="%,d"),
-            "vol_ratio": st.column_config.NumberColumn("vol_ratio", format="%.2f"),
-            "atr_pct(%)": st.column_config.NumberColumn("atr_pct(%)", format="%.2f"),
-            "ret_20(%)": st.column_config.NumberColumn("ret_20(%)", format="%.2f"),
-            "score": st.column_config.NumberColumn("score", format="%,d"),
-        }
-    )
-
-    n_cand = int((df["candidate"] == 1).sum())
-    if n_cand == 0:
-        st.error("NOT TODAY: 조건을 만족하는 후보가 없습니다. (O=0)")
-    else:
-        st.success(f"후보(O) {n_cand}개")
-
-    st.markdown("---")
-    st.subheader("근거(조건 통과 여부) — 종목별로 확인")
-
-    for i, row in df.iterrows():
-        title = f"{row['market']} {row['ticker']} | O/X: {row['O/X']} | score: {row['score']}"
-        with st.expander(title, expanded=(i == 0)):
-            if row.get("error"):
-                st.error(row["error"])
-            reason_list = row.get("reason", [])
-            if reason_list:
-                reason_table = pd.DataFrame(reason_list)
-                st.dataframe(reason_table, use_container_width=True)
-            else:
-                st.write("근거 데이터 없음")
-
-   def build_excel(df_all: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # 1) 시트 작성
         df_all.to_excel(writer, sheet_name="Signals_All", index=False)
 
         df_cand = df_all[df_all["candidate"] == 1].copy()
@@ -472,55 +296,105 @@ if run:
         order_sheet(df_all, "KR").to_excel(writer, sheet_name="Order_KR", index=False)
         order_sheet(df_all, "US").to_excel(writer, sheet_name="Order_US", index=False)
 
-        # 2) ✅ 여기서부터: 엑셀 서식 적용 (원화/달러)
+        # ✅ 통화 서식 적용 (핵심)
         wb = writer.book
-
-        # 적용할 시트들
-        target_sheets = ["Signals_All", "Candidates", "Order_KR", "Order_US"]
-
-        # 가격 관련 컬럼(헤더명 기준)
-        price_cols = {"close", "stop", "target(2R)"}
-
-        # KR/US 통화 서식
-        fmt_krw = u'₩#,##0'         # 원화: 천단위, 소수점 없음
-        fmt_usd = u'$#,##0.00'      # 달러: 천단위 + 소수점 2자리
-
-        for sheet_name in target_sheets:
-            if sheet_name not in wb.sheetnames:
-                continue
-            ws = wb[sheet_name]
-
-            # 헤더 위치(1행)에서 "market"과 가격 컬럼들의 열 번호 찾기
-            header = {}
-            for col in range(1, ws.max_column + 1):
-                v = ws.cell(row=1, column=col).value
-                if isinstance(v, str):
-                    header[v.strip()] = col
-
-            if "market" not in header:
-                continue
-
-            market_col = header["market"]
-
-            # 가격 컬럼이 없는 시트는 스킵
-            price_col_idxs = [header[c] for c in price_cols if c in header]
-            if not price_col_idxs:
-                continue
-
-            # 2행~마지막행 데이터에 서식 적용
-            for r in range(2, ws.max_row + 1):
-                mkt = ws.cell(row=r, column=market_col).value
-                numfmt = fmt_krw if mkt == "KR" else fmt_usd if mkt == "US" else None
-                if not numfmt:
-                    continue
-
-                for c in price_col_idxs:
-                    cell = ws.cell(row=r, column=c)
-                    # 숫자인 경우만 서식 적용
-                    if isinstance(cell.value, (int, float)) and cell.value is not None:
-                        cell.number_format = numfmt
+        for name in ["Signals_All", "Candidates", "Order_KR", "Order_US"]:
+            if name in wb.sheetnames:
+                apply_currency_formats_openpyxl(wb[name])
 
     return output.getvalue()
+
+# ---------------- Streamlit UI ----------------
+st.set_page_config(page_title="Swing Scanner", layout="wide")
+st.title("웹 티커 입력 → 스윙 판단(O/X) + 주문표 엑셀")
+
+with st.sidebar:
+    st.header("스윙 전략 설정 (초보자 권장값)")
+
+    params = {}
+
+    st.markdown("### 추세 지표 (이동평균)")
+    params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
+    st.write("단기 이동평균 기간(기본 20). 작을수록 신호 빠름/노이즈 증가")
+
+    params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
+    st.write("장기 이동평균 기간(기본 60). 단기선이 장기선 위면 상승 추세로 판단")
+
+    st.markdown("---")
+    st.markdown("### 거래량 / 변동성 조건")
+
+    params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
+    st.write("거래량 평균을 계산하는 기간(기본 20)")
+
+    params["VOL_SPIKE"] = st.number_input("VOL_SPIKE (거래량 급증 기준)", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05)
+    st.write("현재 거래량/평균 거래량 비율 기준(예: 1.5 = 평균의 150%)")
+
+    params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"])
+    st.write("ATR(평균 변동폭) 계산 기간(기본 14)")
+
+    params["ATR_PCT_MIN"] = st.number_input("ATR_PCT_MIN (최소 변동성)", 0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]), step=0.001, format="%.3f")
+    st.write("너무 안 움직이는 종목 제외")
+
+    params["ATR_PCT_MAX"] = st.number_input("ATR_PCT_MAX (최대 변동성)", 0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]), step=0.001, format="%.3f")
+    st.write("변동성이 너무 큰 종목 제외")
+
+    st.markdown("---")
+    st.markdown("### 자금 관리")
+    params["ACCOUNT_SIZE"] = st.number_input("ACCOUNT_SIZE (총 투자금)", 100_000, 1_000_000_000, DEFAULTS["ACCOUNT_SIZE"], step=100_000)
+    st.write("포지션 크기 계산용 가상 계좌 금액")
+
+    params["RISK_PER_TRADE"] = st.number_input("RISK_PER_TRADE (1회 최대 손실 비율)", 0.001, 0.05, float(DEFAULTS["RISK_PER_TRADE"]), step=0.001, format="%.3f")
+    st.write("예: 0.01 = 1% 손실까지만 허용")
+
+    params["STOP_ATR_MULT"] = st.number_input("STOP_ATR_MULT (손절 ATR 배수)", 0.5, 5.0, float(DEFAULTS["STOP_ATR_MULT"]), step=0.1)
+    st.write("손절폭 = ATR × 배수 (기본 1.8)")
+
+st.write("**입력 방법**: KR은 6자리 코드(예: `005930`), US는 티커(예: `SPY`). 콤마/줄바꿈/공백 모두 가능.")
+raw = st.text_area("티커 입력", value="005930 000660\nSPY QQQ", height=120)
+
+run = st.button("분석 실행")
+
+def format_currency_for_display(row, col):
+    v = row.get(col, None)
+    mkt = row.get("market", "")
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return ""
+    try:
+        if mkt == "KR":
+            return f"₩{float(v):,.0f}"
+        if mkt == "US":
+            return f"${float(v):,.2f}"
+        return str(v)
+    except Exception:
+        return str(v)
+
+if run:
+    tickers = normalize_tickers(raw)
+    if not tickers:
+        st.warning("티커를 1개 이상 입력하세요.")
+        st.stop()
+
+    rows = [analyze_one(t, params) for t in tickers]
+    df = pd.DataFrame(rows)
+    df = df.sort_values(["candidate", "score"], ascending=[False, False]).reset_index(drop=True)
+
+    st.subheader("결과")
+
+    # 화면 표시용(문자열 포맷) DataFrame
+    df_view = df.copy()
+    for c in ["close", "stop", "target(2R)"]:
+        if c in df_view.columns:
+            df_view[c] = df_view.apply(lambda r: format_currency_for_display(r, c), axis=1)
+
+    st.dataframe(df_view, use_container_width=True)
+
+    n_cand = int((df["candidate"] == 1).sum())
+    if n_cand == 0:
+        st.error("NOT TODAY: 조건을 만족하는 후보가 없습니다. (O=0)")
+    else:
+        st.success(f"후보(O) {n_cand}개")
+
+    xlsx_bytes = build_excel(df)  # ✅ 숫자 원본 df로 엑셀 생성(서식은 openpyxl에서 처리)
 
     st.download_button(
         label="엑셀 1개로 다운로드 (All-in-One)",
