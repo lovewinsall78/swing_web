@@ -439,67 +439,7 @@ if run:
             else:
                 st.write("근거 데이터 없음")
 
-   xlsx_bytes = build_excel(
-def build_excel(df_all: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-
-        df_export = df_all.drop(columns=["reason"], errors="ignore")
-        df_export.to_excel(writer, sheet_name="Signals_All", index=False)
-
-        ws = writer.book["Signals_All"]
-
-        # 컬럼 위치 찾기 (헤더 기준)
-        headers = {cell.value: idx+1 for idx, cell in enumerate(ws[1])}
-
-        col_close  = headers.get("close")
-        col_stop   = headers.get("stop")
-        col_target = headers.get("target(2R)")
-
-        # 2행부터 데이터 시작
-        for r in range(2, ws.max_row + 1):
-            market = ws.cell(row=r, column=headers["market"]).value
-
-            for c in [col_close, col_stop, col_target]:
-                cell = ws.cell(row=r, column=c)
-
-                if market == "KR":
-                    # 한국 주식: 천단위 정수
-                    cell.number_format = '#,##0'
-                elif market == "US":
-                    # 미국 주식: 달러 + 소수점 2자리
-                    cell.number_format = '$#,##0.00'
-
-        # ---- 나머지 시트들 ----
-        df_cand = df_export[df_export["candidate"] == 1].copy()
-        if df_cand.empty:
-            df_cand = pd.DataFrame([{"note": "nottoday"}])
-        df_cand.to_excel(writer, sheet_name="Candidates", index=False)
-
-        # 주문 시트는 기존 로직 그대로
-        def order_sheet(df, market):
-            d = df[(df["market"] == market) & (df["candidate"] == 1)].copy()
-            if d.empty:
-                return pd.DataFrame([{
-                    "market": market, "ticker": "nottoday", "action": "NONE",
-                    "qty": 0, "stop": "", "target(2R)": "", "note": "No candidates"
-                }])
-            d = d.sort_values("score", ascending=False).head(10)
-            d["qty_safe"] = (d["qty"] * 0.5).astype(int)
-            return pd.DataFrame({
-                "market": d["market"],
-                "ticker": d["ticker"],
-                "action": "BUY",
-                "qty": d["qty_safe"],
-                "stop": d["stop"],
-                "target(2R)": d["target(2R)"],
-                "note": ["Manual entry (M-STOCK)"] * len(d)
-            })
-
-        order_sheet(df_all, "KR").to_excel(writer, sheet_name="Order_KR", index=False)
-        order_sheet(df_all, "US").to_excel(writer, sheet_name="Order_US", index=False)
-
-    return output.getvalue())
+   xlsx_bytes = build_excel(df)
 
     st.download_button(
         label="엑셀 1개로 다운로드 (All-in-One)",
