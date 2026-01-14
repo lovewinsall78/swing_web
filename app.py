@@ -22,6 +22,7 @@ DEFAULTS = dict(
     TOP_N=10
 )
 
+# ---------------- Utils ----------------
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", x.strip()))
 
@@ -55,6 +56,7 @@ def rule_signal(last, VOL_SPIKE, ATR_PCT_MIN, ATR_PCT_MAX):
     needed = ["MA_FAST", "MA_SLOW", "VOL_RATIO", "ATR_PCT"]
     if any(pd.isna(last.get(k, np.nan)) for k in needed):
         return 0
+
     trend_ok = (last["MA_FAST"] > last["MA_SLOW"]) and (last["Close"] > last["MA_FAST"])
     vol_ok   = (last["VOL_RATIO"] >= VOL_SPIKE)
     atr_ok   = (ATR_PCT_MIN <= last["ATR_PCT"] <= ATR_PCT_MAX)
@@ -89,6 +91,58 @@ def position_size(entry, atr, ACCOUNT_SIZE, RISK_PER_TRADE, STOP_ATR_MULT):
     stop_price = entry - stop_dist
     return max(0, qty), float(stop_price)
 
+# ✅ 근거 테이블(조건 통과 여부) - 전역 함수로 두어 IndentationError 방지
+def build_reason_table(last, params):
+    def safe(v):
+        return None if pd.isna(v) else float(v)
+
+    close = safe(last.get("Close", np.nan))
+    ma_fast = safe(last.get("MA_FAST", np.nan))
+    ma_slow = safe(last.get("MA_SLOW", np.nan))
+    vol_ratio = safe(last.get("VOL_RATIO", np.nan))
+    atr_pct = safe(last.get("ATR_PCT", np.nan))
+
+    rows = []
+
+    # 1) 추세
+    c1 = (ma_fast is not None) and (ma_slow is not None) and (ma_fast > ma_slow)
+    c2 = (close is not None) and (ma_fast is not None) and (close > ma_fast)
+    rows.append({
+        "조건": "추세: MA_FAST > MA_SLOW",
+        "현재값": f"{ma_fast:,.2f} > {ma_slow:,.2f}" if (ma_fast is not None and ma_slow is not None) else "데이터 부족",
+        "기준": "단기선이 장기선 위",
+        "통과": bool(c1)
+    })
+    rows.append({
+        "조건": "추세: Close > MA_FAST",
+        "현재값": f"{close:,.2f} > {ma_fast:,.2f}" if (close is not None and ma_fast is not None) else "데이터 부족",
+        "기준": "종가가 단기선 위",
+        "통과": bool(c2)
+    })
+
+    # 2) 거래량
+    c3 = (vol_ratio is not None) and (vol_ratio >= float(params["VOL_SPIKE"]))
+    rows.append({
+        "조건": "거래량: VOL_RATIO >= VOL_SPIKE",
+        "현재값": f"{vol_ratio:,.2f}" if vol_ratio is not None else "데이터 부족",
+        "기준": f">= {float(params['VOL_SPIKE']):,.2f}",
+        "통과": bool(c3)
+    })
+
+    # 3) 변동성(ATR%)
+    atr_min = float(params["ATR_PCT_MIN"])
+    atr_max = float(params["ATR_PCT_MAX"])
+    c4 = (atr_pct is not None) and (atr_min <= atr_pct <= atr_max)
+    rows.append({
+        "조건": "변동성: ATR_PCT_MIN <= ATR_PCT <= ATR_PCT_MAX",
+        "현재값": f"{atr_pct*100:,.2f}%" if atr_pct is not None else "데이터 부족",
+        "기준": f"{atr_min*100:,.2f}% ~ {atr_max*100:,.2f}%",
+        "통과": bool(c4)
+    })
+
+    return pd.DataFrame(rows)
+
+# ---------------- Data Load ----------------
 def load_us(ticker: str):
     df = yf.download(
         ticker,
@@ -105,27 +159,21 @@ def load_us(ticker: str):
         lv0 = df.columns.get_level_values(0)
         lv1 = df.columns.get_level_values(1)
 
-        # 케이스 A: (티커, 필드) 형태면 df[ticker]가 바로 OHLCV
+        # 케이스 A: (티커, 필드)
         if ticker in lv0:
             df = df[ticker]
-
-        # 케이스 B: (필드, 티커) 형태면 xs로 ticker만 뽑기
+        # 케이스 B: (필드, 티커)
         elif ticker in lv1:
             df = df.xs(ticker, axis=1, level=1)
-
-        # 그래도 애매하면(티커 1개만 있을 때) 가장 안전한 방식: 첫 번째 ticker를 선택
         else:
-            # level 중 ticker 후보가 있는 쪽을 찾아 첫 번째로 선택
+            # 최후의 수단: 첫 ticker를 골라서 슬라이스
             uniq0 = list(pd.unique(lv0))
             uniq1 = list(pd.unique(lv1))
-            if len(uniq0) > 1 and len(uniq1) <= 10:
-                # (필드, 티커)일 가능성
+            if len(uniq1) >= 1 and ("Close" in uniq0 or "close" in [str(x).lower() for x in uniq0]):
                 df = df.xs(uniq1[0], axis=1, level=1)
-            elif len(uniq1) > 1 and len(uniq0) <= 10:
-                # (티커, 필드)일 가능성
+            elif len(uniq0) >= 1:
                 df = df[uniq0[0]]
             else:
-                # 최후의 수단: level0만 남기면 Close가 중복되어 또 터지므로 금지
                 raise ValueError(f"Unexpected MultiIndex columns: {df.columns}")
 
     # 컬럼명 통일
@@ -143,7 +191,6 @@ def load_us(ticker: str):
     df = df[keep].dropna()
     return df
 
-
 def load_kr(code: str):
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=365*2)).strftime("%Y-%m-%d")
@@ -152,6 +199,7 @@ def load_kr(code: str):
     df = df[["Open","High","Low","Close","Volume"]].dropna()
     return df
 
+# ---------------- Analyzer ----------------
 def analyze_one(ticker: str, params: dict):
     try:
         if is_kr_code(ticker):
@@ -177,56 +225,7 @@ def analyze_one(ticker: str, params: dict):
             ATR_PCT_MAX=params["ATR_PCT_MAX"],
         )
 
-        def build_reason_table(last, params):
-    # NaN 방어
-    def safe(v):
-        return None if pd.isna(v) else float(v)
-
-    close = safe(last.get("Close", np.nan))
-    ma_fast = safe(last.get("MA_FAST", np.nan))
-    ma_slow = safe(last.get("MA_SLOW", np.nan))
-    vol_ratio = safe(last.get("VOL_RATIO", np.nan))
-    atr_pct = safe(last.get("ATR_PCT", np.nan))
-
-    rows = []
-
-    # 1) 추세
-    c1 = (ma_fast is not None) and (ma_slow is not None) and (ma_fast > ma_slow)
-    c2 = (close is not None) and (ma_fast is not None) and (close > ma_fast)
-    rows.append({
-        "조건": "추세: MA_FAST > MA_SLOW",
-        "현재값": f"{ma_fast:.2f} > {ma_slow:.2f}" if (ma_fast is not None and ma_slow is not None) else "데이터 부족",
-        "기준": "단기선이 장기선 위",
-        "통과": bool(c1)
-    })
-    rows.append({
-        "조건": "추세: Close > MA_FAST",
-        "현재값": f"{close:.2f} > {ma_fast:.2f}" if (close is not None and ma_fast is not None) else "데이터 부족",
-        "기준": "종가가 단기선 위",
-        "통과": bool(c2)
-    })
-
-    # 2) 거래량
-    c3 = (vol_ratio is not None) and (vol_ratio >= float(params["VOL_SPIKE"]))
-    rows.append({
-        "조건": "거래량: VOL_RATIO >= VOL_SPIKE",
-        "현재값": f"{vol_ratio:.2f}" if vol_ratio is not None else "데이터 부족",
-        "기준": f">= {float(params['VOL_SPIKE']):.2f}",
-        "통과": bool(c3)
-    })
-
-    # 3) 변동성(ATR%)
-    atr_min = float(params["ATR_PCT_MIN"])
-    atr_max = float(params["ATR_PCT_MAX"])
-    c4 = (atr_pct is not None) and (atr_min <= atr_pct <= atr_max)
-    rows.append({
-        "조건": "변동성: ATR_PCT_MIN <= ATR_PCT <= ATR_PCT_MAX",
-        "현재값": f"{atr_pct*100:.2f}%" if atr_pct is not None else "데이터 부족",
-        "기준": f"{atr_min*100:.2f}% ~ {atr_max*100:.2f}%",
-        "통과": bool(c4)
-    })
-
-    return pd.DataFrame(rows)
+        reason_df = build_reason_table(last, params)
 
         sc = score_row(last) if cand == 1 else 0
 
@@ -237,7 +236,6 @@ def analyze_one(ticker: str, params: dict):
             RISK_PER_TRADE=params["RISK_PER_TRADE"],
             STOP_ATR_MULT=params["STOP_ATR_MULT"],
         )
-
         target = entry + 2 * (entry - stop) if (not np.isnan(stop)) else np.nan
 
         return {
@@ -246,16 +244,20 @@ def analyze_one(ticker: str, params: dict):
             "O/X": "O" if cand == 1 else "X",
             "candidate": int(cand),
             "score": int(sc),
-            "close": round(entry, 2),
-            "stop": (None if np.isnan(stop) else round(stop, 2)),
-            "target(2R)": (None if np.isnan(target) else round(target, 2)),
+
+            "close": float(round(entry, 2)),
+            "stop": (np.nan if np.isnan(stop) else float(round(stop, 2))),
+            "target(2R)": (np.nan if np.isnan(target) else float(round(target, 2))),
             "qty": int(qty),
-            "vol_ratio": (None if pd.isna(last["VOL_RATIO"]) else round(float(last["VOL_RATIO"]), 2)),
-            "atr_pct(%)": (None if pd.isna(last["ATR_PCT"]) else round(float(last["ATR_PCT"])*100, 2)),
-            "ret_20(%)": (None if pd.isna(last["RET_20"]) else round(float(last["RET_20"])*100, 2)),
+
+            "vol_ratio": (np.nan if pd.isna(last["VOL_RATIO"]) else float(round(float(last["VOL_RATIO"]), 2))),
+            "atr_pct(%)": (np.nan if pd.isna(last["ATR_PCT"]) else float(round(float(last["ATR_PCT"]) * 100, 2))),
+            "ret_20(%)": (np.nan if pd.isna(last["RET_20"]) else float(round(float(last["RET_20"]) * 100, 2))),
             "date": str(df.index[-1].date()),
+            "reason": reason_df.to_dict(orient="records"),
             "error": ""
         }
+
     except Exception as e:
         return {
             "market": "?",
@@ -263,25 +265,31 @@ def analyze_one(ticker: str, params: dict):
             "O/X": "X",
             "candidate": 0,
             "score": 0,
-            "close": None,
-            "stop": None,
-            "target(2R)": None,
+            "close": np.nan,
+            "stop": np.nan,
+            "target(2R)": np.nan,
             "qty": 0,
-            "vol_ratio": None,
-            "atr_pct(%)": None,
-            "ret_20(%)": None,
+            "vol_ratio": np.nan,
+            "atr_pct(%)": np.nan,
+            "ret_20(%)": np.nan,
             "date": "",
+            "reason": [],
             "error": str(e)
         }
 
+# ---------------- Excel ----------------
 def build_excel(df_all: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_all.to_excel(writer, sheet_name="Signals_All", index=False)
+        # reason 컬럼은 엑셀에선 제외(리스트/오브젝트라 보기 불편)
+        df_export = df_all.drop(columns=["reason"], errors="ignore")
+        df_export.to_excel(writer, sheet_name="Signals_All", index=False)
 
         df_cand = df_all[df_all["candidate"] == 1].copy()
         if df_cand.empty:
             df_cand = pd.DataFrame([{"note": "nottoday"}])
+        else:
+            df_cand = df_cand.drop(columns=["reason"], errors="ignore")
         df_cand.to_excel(writer, sheet_name="Candidates", index=False)
 
         def order_sheet(df, market):
@@ -310,7 +318,7 @@ def build_excel(df_all: pd.DataFrame) -> bytes:
 
 # ---------------- UI ----------------
 st.set_page_config(page_title="Swing Scanner", layout="wide")
-st.title("웹 티커 입력 → 스윙 판단(O/X) + 주문표 엑셀")
+st.title("웹 티커 입력 → 스윙 판단(O/X) + 근거표 + 주문표 엑셀")
 
 with st.sidebar:
     st.header("스윙 전략 설정 (초보자 권장값)")
@@ -318,11 +326,7 @@ with st.sidebar:
     params = {}
 
     st.markdown("### 추세 지표 (이동평균)")
-
-    params["MA_FAST"] = st.number_input(
-        "MA_FAST (단기 이동평균)",
-        5, 200, DEFAULTS["MA_FAST"]
-    )
+    params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
     st.write(
         "최근 주가의 단기 흐름을 보는 이동평균 기간입니다.\n"
         "- 값이 작을수록 신호는 빠르지만 잦은 실패 가능\n"
@@ -330,10 +334,7 @@ with st.sidebar:
         "일반적으로 10~30일을 사용하며 기본값 20은 무난합니다."
     )
 
-    params["MA_SLOW"] = st.number_input(
-        "MA_SLOW (장기 이동평균)",
-        10, 300, DEFAULTS["MA_SLOW"]
-    )
+    params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
     st.write(
         "중·장기 추세를 판단하는 기준 이동평균입니다.\n"
         "단기 이동평균(MA_FAST)이 이 값 위에 있으면 상승 추세로 판단합니다.\n"
@@ -343,88 +344,41 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 거래량 / 변동성 조건")
 
-    params["VOL_LOOKBACK"] = st.number_input(
-        "VOL_LOOKBACK (거래량 평균 기간)",
-        5, 200, DEFAULTS["VOL_LOOKBACK"]
-    )
+    params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
     st.write(
         "평균 거래량을 계산하는 기간입니다.\n"
-        "현재 거래량이 이 평균 대비 얼마나 증가했는지 판단하는 데 사용됩니다."
+        "현재 거래량이 이 평균 대비 얼마나 증가했는지(VOL_RATIO) 판단하는 데 사용됩니다."
     )
 
-    params["VOL_SPIKE"] = st.number_input(
-        "VOL_SPIKE (거래량 급증 기준)",
-        1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]),
-        step=0.05
-    )
+    params["VOL_SPIKE"] = st.number_input("VOL_SPIKE (거래량 급증 기준)", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05)
     st.write(
         "현재 거래량이 평균 대비 몇 배 이상일 때 진입 후보로 볼지 정합니다.\n"
         "예: 1.5는 평균 거래량 대비 150% 이상을 의미합니다."
     )
 
-    params["ATR_PERIOD"] = st.number_input(
-        "ATR_PERIOD (ATR 계산 기간)",
-        5, 100, DEFAULTS["ATR_PERIOD"]
-    )
+    params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"])
     st.write(
         "ATR은 주가의 평균 변동폭을 나타내는 지표입니다.\n"
         "값이 클수록 주가 변동이 큰 종목입니다."
     )
 
-    params["ATR_PCT_MIN"] = st.number_input(
-        "ATR_PCT_MIN (최소 변동성)",
-        0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]),
-        step=0.001, format="%.3f"
-    )
-    st.write(
-        "너무 움직임이 없는 종목을 제외하기 위한 최소 변동성 기준입니다."
-    )
+    params["ATR_PCT_MIN"] = st.number_input("ATR_PCT_MIN (최소 변동성)", 0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]), step=0.001, format="%.3f")
+    st.write("너무 움직임이 없는(변동성 낮은) 종목을 제외하기 위한 최소 변동성 기준입니다.")
 
-    params["ATR_PCT_MAX"] = st.number_input(
-        "ATR_PCT_MAX (최대 변동성)",
-        0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]),
-        step=0.001, format="%.3f"
-    )
-    st.write(
-        "변동성이 지나치게 큰 고위험 종목을 제외하기 위한 상한선입니다."
-    )
+    params["ATR_PCT_MAX"] = st.number_input("ATR_PCT_MAX (최대 변동성)", 0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]), step=0.001, format="%.3f")
+    st.write("변동성이 지나치게 큰(고위험) 종목을 제외하기 위한 상한선입니다.")
 
     st.markdown("---")
     st.markdown("### 자금 관리")
 
-    params["ACCOUNT_SIZE"] = st.number_input(
-        "ACCOUNT_SIZE (총 투자금)",
-        100_000, 1_000_000_000,
-        DEFAULTS["ACCOUNT_SIZE"],
-        step=100_000
-    )
-    st.write(
-        "가상의 전체 계좌 금액입니다.\n"
-        "실제 주문이 아니라 포지션 크기 계산에만 사용됩니다."
-    )
+    params["ACCOUNT_SIZE"] = st.number_input("ACCOUNT_SIZE (총 투자금)", 100_000, 1_000_000_000, DEFAULTS["ACCOUNT_SIZE"], step=100_000)
+    st.write("가상의 전체 계좌 금액입니다. 실제 주문이 아니라 포지션 크기 계산에만 사용됩니다.")
 
-    params["RISK_PER_TRADE"] = st.number_input(
-        "RISK_PER_TRADE (1회 최대 손실 비율)",
-        0.001, 0.05,
-        float(DEFAULTS["RISK_PER_TRADE"]),
-        step=0.001, format="%.3f"
-    )
-    st.write(
-        "한 종목에서 감수할 최대 손실 비율입니다.\n"
-        "예: 0.01은 1% 손실을 의미합니다."
-    )
+    params["RISK_PER_TRADE"] = st.number_input("RISK_PER_TRADE (1회 최대 손실 비율)", 0.001, 0.05, float(DEFAULTS["RISK_PER_TRADE"]), step=0.001, format="%.3f")
+    st.write("한 종목에서 감수할 최대 손실 비율입니다. 예: 0.01은 1% 손실을 의미합니다.")
 
-    params["STOP_ATR_MULT"] = st.number_input(
-        "STOP_ATR_MULT (손절 ATR 배수)",
-        0.5, 5.0,
-        float(DEFAULTS["STOP_ATR_MULT"]),
-        step=0.1
-    )
-    st.write(
-        "손절 가격을 ATR 기준으로 얼마나 여유 있게 둘지 정합니다.\n"
-        "보통 1.5~2.0 범위를 많이 사용합니다."
-    )
-
+    params["STOP_ATR_MULT"] = st.number_input("STOP_ATR_MULT (손절 ATR 배수)", 0.5, 5.0, float(DEFAULTS["STOP_ATR_MULT"]), step=0.1)
+    st.write("손절 가격을 ATR 기준으로 얼마나 여유 있게 둘지 정합니다. 보통 1.5~2.0 범위를 많이 사용합니다.")
 
 st.write("**입력 방법**: KR은 6자리 코드(예: `005930`), US는 티커(예: `SPY`). 콤마/줄바꿈/공백 모두 가능.")
 raw = st.text_area("티커 입력", value="005930 000660\nSPY QQQ", height=120)
@@ -439,19 +393,49 @@ if run:
 
     rows = [analyze_one(t, params) for t in tickers]
     df = pd.DataFrame(rows)
-    
+
     df = df.sort_values(["candidate", "score"], ascending=[False, False]).reset_index(drop=True)
 
     st.subheader("결과")
 
+    # ✅ 메인 테이블에는 reason(리스트) 숨기고, 숫자는 천단위 콤마로 표시
+    df_main = df.drop(columns=["reason"], errors="ignore")
 
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(
+        df_main,
+        use_container_width=True,
+        column_config={
+            "close": st.column_config.NumberColumn("close", format="%,.2f"),
+            "stop": st.column_config.NumberColumn("stop", format="%,.2f"),
+            "target(2R)": st.column_config.NumberColumn("target(2R)", format="%,.2f"),
+            "qty": st.column_config.NumberColumn("qty", format="%,d"),
+            "vol_ratio": st.column_config.NumberColumn("vol_ratio", format="%.2f"),
+            "atr_pct(%)": st.column_config.NumberColumn("atr_pct(%)", format="%.2f"),
+            "ret_20(%)": st.column_config.NumberColumn("ret_20(%)", format="%.2f"),
+            "score": st.column_config.NumberColumn("score", format="%,d"),
+        }
+    )
 
     n_cand = int((df["candidate"] == 1).sum())
     if n_cand == 0:
         st.error("NOT TODAY: 조건을 만족하는 후보가 없습니다. (O=0)")
     else:
         st.success(f"후보(O) {n_cand}개")
+
+    st.markdown("---")
+    st.subheader("근거(조건 통과 여부) — 종목별로 확인")
+
+    for i, row in df.iterrows():
+        title = f"{row['market']} {row['ticker']} | O/X: {row['O/X']} | score: {row['score']}"
+        with st.expander(title, expanded=(i == 0)):
+            if row.get("error"):
+                st.error(row["error"])
+            reason_list = row.get("reason", [])
+            if reason_list:
+                reason_table = pd.DataFrame(reason_list)
+                st.dataframe(reason_table, use_container_width=True)
+            else:
+                st.write("근거 데이터 없음")
 
     xlsx_bytes = build_excel(df)
     st.download_button(
@@ -460,4 +444,3 @@ if run:
         file_name="Swing_Output_AllInOne.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
