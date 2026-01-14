@@ -439,44 +439,17 @@ if run:
             else:
                 st.write("근거 데이터 없음")
 
-   xlsx_bytes = build_excel(
-       def build_excel(df_all: pd.DataFrame) -> bytes:
+   def build_excel(df_all: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        # 1) 시트 작성
+        df_all.to_excel(writer, sheet_name="Signals_All", index=False)
 
-        df_export = df_all.drop(columns=["reason"], errors="ignore")
-        df_export.to_excel(writer, sheet_name="Signals_All", index=False)
-
-        ws = writer.book["Signals_All"]
-
-        # 컬럼 위치 찾기 (헤더 기준)
-        headers = {cell.value: idx+1 for idx, cell in enumerate(ws[1])}
-
-        col_close  = headers.get("close")
-        col_stop   = headers.get("stop")
-        col_target = headers.get("target(2R)")
-
-        # 2행부터 데이터 시작
-        for r in range(2, ws.max_row + 1):
-            market = ws.cell(row=r, column=headers["market"]).value
-
-            for c in [col_close, col_stop, col_target]:
-                cell = ws.cell(row=r, column=c)
-
-                if market == "KR":
-                    # 한국 주식: 천단위 정수
-                    cell.number_format = '#,##0'
-                elif market == "US":
-                    # 미국 주식: 달러 + 소수점 2자리
-                    cell.number_format = '$#,##0.00'
-
-        # ---- 나머지 시트들 ----
-        df_cand = df_export[df_export["candidate"] == 1].copy()
+        df_cand = df_all[df_all["candidate"] == 1].copy()
         if df_cand.empty:
             df_cand = pd.DataFrame([{"note": "nottoday"}])
         df_cand.to_excel(writer, sheet_name="Candidates", index=False)
 
-        # 주문 시트는 기존 로직 그대로
         def order_sheet(df, market):
             d = df[(df["market"] == market) & (df["candidate"] == 1)].copy()
             if d.empty:
@@ -499,8 +472,55 @@ if run:
         order_sheet(df_all, "KR").to_excel(writer, sheet_name="Order_KR", index=False)
         order_sheet(df_all, "US").to_excel(writer, sheet_name="Order_US", index=False)
 
+        # 2) ✅ 여기서부터: 엑셀 서식 적용 (원화/달러)
+        wb = writer.book
+
+        # 적용할 시트들
+        target_sheets = ["Signals_All", "Candidates", "Order_KR", "Order_US"]
+
+        # 가격 관련 컬럼(헤더명 기준)
+        price_cols = {"close", "stop", "target(2R)"}
+
+        # KR/US 통화 서식
+        fmt_krw = u'₩#,##0'         # 원화: 천단위, 소수점 없음
+        fmt_usd = u'$#,##0.00'      # 달러: 천단위 + 소수점 2자리
+
+        for sheet_name in target_sheets:
+            if sheet_name not in wb.sheetnames:
+                continue
+            ws = wb[sheet_name]
+
+            # 헤더 위치(1행)에서 "market"과 가격 컬럼들의 열 번호 찾기
+            header = {}
+            for col in range(1, ws.max_column + 1):
+                v = ws.cell(row=1, column=col).value
+                if isinstance(v, str):
+                    header[v.strip()] = col
+
+            if "market" not in header:
+                continue
+
+            market_col = header["market"]
+
+            # 가격 컬럼이 없는 시트는 스킵
+            price_col_idxs = [header[c] for c in price_cols if c in header]
+            if not price_col_idxs:
+                continue
+
+            # 2행~마지막행 데이터에 서식 적용
+            for r in range(2, ws.max_row + 1):
+                mkt = ws.cell(row=r, column=market_col).value
+                numfmt = fmt_krw if mkt == "KR" else fmt_usd if mkt == "US" else None
+                if not numfmt:
+                    continue
+
+                for c in price_col_idxs:
+                    cell = ws.cell(row=r, column=c)
+                    # 숫자인 경우만 서식 적용
+                    if isinstance(cell.value, (int, float)) and cell.value is not None:
+                        cell.number_format = numfmt
+
     return output.getvalue()
-)
 
     st.download_button(
         label="엑셀 1개로 다운로드 (All-in-One)",
