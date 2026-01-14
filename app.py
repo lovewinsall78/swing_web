@@ -439,7 +439,8 @@ if run:
             else:
                 st.write("근거 데이터 없음")
 
-   xlsx_bytes = build_excel(def build_excel(df_all: pd.DataFrame) -> bytes:
+   xlsx_bytes = build_excel(
+       def build_excel(df_all: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
 
