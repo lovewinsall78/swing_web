@@ -439,7 +439,7 @@ if run:
             else:
                 st.write("근거 데이터 없음")
 
-   xlsx_bytes = build_excel(df)
+   xlsx_bytes = build_excel(
 def build_excel(df_all: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -499,7 +499,7 @@ def build_excel(df_all: pd.DataFrame) -> bytes:
         order_sheet(df_all, "KR").to_excel(writer, sheet_name="Order_KR", index=False)
         order_sheet(df_all, "US").to_excel(writer, sheet_name="Order_US", index=False)
 
-    return output.getvalue()
+    return output.getvalue())
 
     st.download_button(
         label="엑셀 1개로 다운로드 (All-in-One)",
