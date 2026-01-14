@@ -96,6 +96,59 @@ def position_size(entry, atr, ACCOUNT_SIZE, RISK_PER_TRADE, STOP_ATR_MULT):
     stop_price = entry - stop_dist
     return max(0, qty), float(stop_price)
 
+# ---------------- Reason Table (근거표) ----------------
+def build_reason_table(last: pd.Series, params: dict) -> pd.DataFrame:
+    def safe(v):
+        return None if pd.isna(v) else float(v)
+
+    close = safe(last.get("Close", np.nan))
+    ma_fast = safe(last.get("MA_FAST", np.nan))
+    ma_slow = safe(last.get("MA_SLOW", np.nan))
+    vol_ratio = safe(last.get("VOL_RATIO", np.nan))
+    atr_pct = safe(last.get("ATR_PCT", np.nan))
+
+    rows = []
+
+    # 1) 추세 조건 2개
+    c1 = (ma_fast is not None) and (ma_slow is not None) and (ma_fast > ma_slow)
+    c2 = (close is not None) and (ma_fast is not None) and (close > ma_fast)
+
+    rows.append({
+        "조건": "추세: MA_FAST > MA_SLOW",
+        "현재값": f"{ma_fast:,.2f} > {ma_slow:,.2f}" if (ma_fast is not None and ma_slow is not None) else "데이터 부족",
+        "기준": "단기선이 장기선 위",
+        "통과": bool(c1)
+    })
+    rows.append({
+        "조건": "추세: Close > MA_FAST",
+        "현재값": f"{close:,.2f} > {ma_fast:,.2f}" if (close is not None and ma_fast is not None) else "데이터 부족",
+        "기준": "종가가 단기선 위",
+        "통과": bool(c2)
+    })
+
+    # 2) 거래량 조건
+    vol_spike = float(params["VOL_SPIKE"])
+    c3 = (vol_ratio is not None) and (vol_ratio >= vol_spike)
+    rows.append({
+        "조건": "거래량: VOL_RATIO >= VOL_SPIKE",
+        "현재값": f"{vol_ratio:,.2f}" if vol_ratio is not None else "데이터 부족",
+        "기준": f">= {vol_spike:,.2f}",
+        "통과": bool(c3)
+    })
+
+    # 3) 변동성(ATR%) 조건
+    atr_min = float(params["ATR_PCT_MIN"])
+    atr_max = float(params["ATR_PCT_MAX"])
+    c4 = (atr_pct is not None) and (atr_min <= atr_pct <= atr_max)
+    rows.append({
+        "조건": "변동성: ATR_PCT_MIN <= ATR_PCT <= ATR_PCT_MAX",
+        "현재값": f"{atr_pct*100:,.2f}%" if atr_pct is not None else "데이터 부족",
+        "기준": f"{atr_min*100:,.2f}% ~ {atr_max*100:,.2f}%",
+        "통과": bool(c4)
+    })
+
+    return pd.DataFrame(rows)
+
 # ---------------- Data Loaders ----------------
 def load_us(ticker: str):
     df = yf.download(
@@ -108,7 +161,7 @@ def load_us(ticker: str):
         threads=False,
     )
 
-    # MultiIndex 처리
+    # MultiIndex 처리 (yfinance가 가끔 (필드,티커)로 반환)
     if isinstance(df.columns, pd.MultiIndex):
         lv0 = df.columns.get_level_values(0)
         lv1 = df.columns.get_level_values(1)
@@ -118,8 +171,6 @@ def load_us(ticker: str):
         elif ticker in lv1:        # (필드, 티커)
             df = df.xs(ticker, axis=1, level=1)
         else:
-            # 최후의 수단: 1개만 있는 경우가 많으므로 첫 번째 블록 선택
-            # 하지만 중복 컬럼이 생기면 폭발하므로 "ticker" 축을 골라야 함
             uniq0 = list(pd.unique(lv0))
             uniq1 = list(pd.unique(lv1))
             if len(uniq0) > 1 and len(uniq1) <= 10:
@@ -131,7 +182,6 @@ def load_us(ticker: str):
 
     df = df.rename(columns=lambda c: str(c).title())
 
-    # Close 없고 Adj Close만 있으면 대체
     if "Close" not in df.columns and "Adj Close" in df.columns:
         df["Close"] = df["Adj Close"]
 
@@ -151,8 +201,14 @@ def load_kr(code: str):
     df = df[["Open","High","Low","Close","Volume"]].dropna()
     return df
 
-# ---------------- Analysis ----------------
-def analyze_one(ticker: str, params: dict):
+# ---------------- Analysis (returns summary + df_ind) ----------------
+def analyze_one_with_df(ticker: str, params: dict):
+    """
+    반환:
+      - result_dict: 요약 행(표에 들어갈 값들)
+      - df_ind: 지표 포함된 데이터프레임(근거표/차트에 사용)
+      - reason_df: 근거표
+    """
     try:
         if is_kr_code(ticker):
             market = "KR"
@@ -161,7 +217,7 @@ def analyze_one(ticker: str, params: dict):
             market = "US"
             df = load_us(ticker)
 
-        df = add_indicators(
+        df_ind = add_indicators(
             df,
             MA_FAST=params["MA_FAST"],
             MA_SLOW=params["MA_SLOW"],
@@ -169,7 +225,7 @@ def analyze_one(ticker: str, params: dict):
             ATR_PERIOD=params["ATR_PERIOD"],
         )
 
-        last = df.iloc[-1]
+        last = df_ind.iloc[-1]
 
         cand = rule_signal(
             last,
@@ -190,7 +246,9 @@ def analyze_one(ticker: str, params: dict):
 
         target = entry + 2 * (entry - stop) if (not np.isnan(stop)) else np.nan
 
-        return {
+        reason_df = build_reason_table(last, params)
+
+        result = {
             "market": market,
             "ticker": ticker,
             "O/X": "O" if cand == 1 else "X",
@@ -201,13 +259,15 @@ def analyze_one(ticker: str, params: dict):
             "target(2R)": (None if np.isnan(target) else float(target)),
             "qty": int(qty),
             "vol_ratio": (None if pd.isna(last["VOL_RATIO"]) else float(last["VOL_RATIO"])),
-            "atr_pct(%)": (None if pd.isna(last["ATR_PCT"]) else float(last["ATR_PCT"])*100),
-            "ret_20(%)": (None if pd.isna(last["RET_20"]) else float(last["RET_20"])*100),
-            "date": str(df.index[-1].date()),
+            "atr_pct(%)": (None if pd.isna(last["ATR_PCT"]) else float(last["ATR_PCT"]) * 100),
+            "ret_20(%)": (None if pd.isna(last["RET_20"]) else float(last["RET_20"]) * 100),
+            "date": str(df_ind.index[-1].date()),
             "error": ""
         }
+        return result, df_ind, reason_df
+
     except Exception as e:
-        return {
+        result = {
             "market": "?",
             "ticker": ticker,
             "O/X": "X",
@@ -223,19 +283,14 @@ def analyze_one(ticker: str, params: dict):
             "date": "",
             "error": str(e)
         }
+        return result, None, None
 
 # ---------------- Excel formatting (KRW/USD) ----------------
 def apply_currency_formats_openpyxl(ws):
-    """
-    시트에서:
-      - market 값이 KR이면 close/stop/target(2R) -> ₩#,##0
-      - market 값이 US이면 close/stop/target(2R) -> $#,##0.00
-    """
     fmt_krw = u'₩#,##0'
     fmt_usd = u'$#,##0.00'
     price_cols = {"close", "stop", "target(2R)"}
 
-    # 헤더 찾기
     header = {}
     for col in range(1, ws.max_column + 1):
         v = ws.cell(row=1, column=col).value
@@ -296,7 +351,6 @@ def build_excel(df_all: pd.DataFrame) -> bytes:
         order_sheet(df_all, "KR").to_excel(writer, sheet_name="Order_KR", index=False)
         order_sheet(df_all, "US").to_excel(writer, sheet_name="Order_US", index=False)
 
-        # ✅ 통화 서식 적용 (핵심)
         wb = writer.book
         for name in ["Signals_All", "Candidates", "Order_KR", "Order_US"]:
             if name in wb.sheetnames:
@@ -304,13 +358,25 @@ def build_excel(df_all: pd.DataFrame) -> bytes:
 
     return output.getvalue()
 
+# ---------------- Display helpers ----------------
+def format_currency_for_display(market: str, v):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return ""
+    try:
+        if market == "KR":
+            return f"₩{float(v):,.0f}"
+        if market == "US":
+            return f"${float(v):,.2f}"
+        return str(v)
+    except Exception:
+        return str(v)
+
 # ---------------- Streamlit UI ----------------
 st.set_page_config(page_title="Swing Scanner", layout="wide")
-st.title("웹 티커 입력 → 스윙 판단(O/X) + 주문표 엑셀")
+st.title("웹 티커 입력 → 스윙 판단(O/X) + 근거(표+차트) + 주문표 엑셀")
 
 with st.sidebar:
     st.header("스윙 전략 설정 (초보자 권장값)")
-
     params = {}
 
     st.markdown("### 추세 지표 (이동평균)")
@@ -322,7 +388,6 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 거래량 / 변동성 조건")
-
     params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
     st.write("거래량 평균을 계산하는 기간(기본 20)")
 
@@ -351,22 +416,7 @@ with st.sidebar:
 
 st.write("**입력 방법**: KR은 6자리 코드(예: `005930`), US는 티커(예: `SPY`). 콤마/줄바꿈/공백 모두 가능.")
 raw = st.text_area("티커 입력", value="005930 000660\nSPY QQQ", height=120)
-
 run = st.button("분석 실행")
-
-def format_currency_for_display(row, col):
-    v = row.get(col, None)
-    mkt = row.get("market", "")
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return ""
-    try:
-        if mkt == "KR":
-            return f"₩{float(v):,.0f}"
-        if mkt == "US":
-            return f"${float(v):,.2f}"
-        return str(v)
-    except Exception:
-        return str(v)
 
 if run:
     tickers = normalize_tickers(raw)
@@ -374,17 +424,25 @@ if run:
         st.warning("티커를 1개 이상 입력하세요.")
         st.stop()
 
-    rows = [analyze_one(t, params) for t in tickers]
-    df = pd.DataFrame(rows)
+    results = []
+    detail_map = {}  # ticker -> (df_ind, reason_df)
+
+    for t in tickers:
+        res, df_ind, reason_df = analyze_one_with_df(t, params)
+        results.append(res)
+        if df_ind is not None and reason_df is not None:
+            detail_map[t] = (df_ind, reason_df)
+
+    df = pd.DataFrame(results)
     df = df.sort_values(["candidate", "score"], ascending=[False, False]).reset_index(drop=True)
 
     st.subheader("결과")
 
-    # 화면 표시용(문자열 포맷) DataFrame
+    # 화면 표시용(통화 포맷만 문자열로)
     df_view = df.copy()
     for c in ["close", "stop", "target(2R)"]:
         if c in df_view.columns:
-            df_view[c] = df_view.apply(lambda r: format_currency_for_display(r, c), axis=1)
+            df_view[c] = df_view.apply(lambda r: format_currency_for_display(r.get("market", ""), r.get(c, None)), axis=1)
 
     st.dataframe(df_view, use_container_width=True)
 
@@ -394,8 +452,56 @@ if run:
     else:
         st.success(f"후보(O) {n_cand}개")
 
-    xlsx_bytes = build_excel(df)  # ✅ 숫자 원본 df로 엑셀 생성(서식은 openpyxl에서 처리)
+    st.markdown("---")
+    st.subheader("근거(조건표 + 차트)")
 
+    # 각 티커별 근거 표시
+    for _, row in df.iterrows():
+        tkr = row["ticker"]
+        mkt = row["market"]
+        ox = row["O/X"]
+        err = row.get("error", "")
+
+        title = f"{tkr} ({mkt}) - {ox}"
+        with st.expander(title, expanded=False):
+            if err:
+                st.error(f"데이터 오류: {err}")
+                continue
+
+            if tkr not in detail_map:
+                st.warning("근거 데이터를 만들지 못했습니다.")
+                continue
+
+            df_ind, reason_df = detail_map[tkr]
+
+            # 1) 근거표
+            st.write("조건별 통과/실패 근거")
+            st.dataframe(reason_df, use_container_width=True)
+
+            # 2) 차트(종가 + MA)
+            st.write("종가 + 이동평균")
+            chart_df1 = df_ind[["Close", "MA_FAST", "MA_SLOW"]].dropna()
+            st.line_chart(chart_df1)
+
+            # 3) 차트(거래량 + 평균)
+            st.write("거래량 + 평균 거래량")
+            chart_df2 = df_ind[["Volume", "VOL_AVG"]].dropna()
+            st.line_chart(chart_df2)
+
+            # 4) 핵심 수치 요약(가독성)
+            close = row.get("close", None)
+            stop = row.get("stop", None)
+            target = row.get("target(2R)", None)
+
+            st.write(
+                f"- close: {format_currency_for_display(mkt, close)}\n"
+                f"- stop: {format_currency_for_display(mkt, stop)}\n"
+                f"- target(2R): {format_currency_for_display(mkt, target)}\n"
+                f"- qty: {int(row.get('qty', 0)):,}"
+            )
+
+    # 엑셀 다운로드
+    xlsx_bytes = build_excel(df)  # 숫자 원본 df로 생성(서식 적용됨)
     st.download_button(
         label="엑셀 1개로 다운로드 (All-in-One)",
         data=xlsx_bytes,
