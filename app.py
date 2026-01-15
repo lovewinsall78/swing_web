@@ -371,25 +371,17 @@ def format_currency_for_display(market: str, v):
     except Exception:
         return str(v)
 
+st.set_page_config(page_title="Swing Scanner", layout="wide")
+
 st.markdown(
     """
-    <style>
-    h1 {
-        font-size: 36px !important;
-    }
-    h2 {
-        font-size: 26px !important;
-    }
-    h3 {
-        font-size: 22px !important;
-    }
-    </style>
+    <h1 style="font-size:36px;font-weight:700;">
+        웹 티커 입력 → 스윙 판단(O/X) + 근거(표+차트) + 주문표 엑셀
+    </h1>
     """,
     unsafe_allow_html=True
 )
 
-st.set_page_config(page_title="Swing Scanner", layout="wide")
-st.title("웹 티커 입력 → 스윙 판단(O/X) + 근거(표+차트) + 주문표 엑셀")
 
 with st.sidebar:
     st.header("스윙 전략 설정 (초보자 권장값)")
