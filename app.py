@@ -371,10 +371,6 @@ def format_currency_for_display(market: str, v):
     except Exception:
         return str(v)
 
-# ---------------- Streamlit UI ----------------
-#st.set_page_config(page_title="Swing Scanner", layout="wide")
-#st.title("웹 티커 입력 → 스윙 판단(O/X) + 근거(표+차트) + 주문표 엑셀")
-
 st.markdown(
     """
     <style>
@@ -392,6 +388,8 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+st.set_page_config(page_title="Swing Scanner", layout="wide")
+st.title("웹 티커 입력 → 스윙 판단(O/X) + 근거(표+차트) + 주문표 엑셀")
 
 with st.sidebar:
     st.header("스윙 전략 설정 (초보자 권장값)")
