@@ -7,12 +7,12 @@ from pykrx import stock as krx
 import streamlit as st
 from datetime import datetime, timedelta
 
-import altair as alt  # 차트(수평선 포함)
+import altair as alt
 from openpyxl import load_workbook
 
 
 # =========================
-# 기본값
+# Defaults
 # =========================
 DEFAULTS = dict(
     MA_FAST=20,
@@ -31,7 +31,7 @@ DEFAULTS = dict(
 
 
 # =========================
-# 유틸
+# Utils
 # =========================
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", x.strip()))
@@ -47,7 +47,7 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     prev_close = close.shift(1)
     tr = pd.concat(
         [(high - low), (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1
+        axis=1,
     ).max(axis=1)
     return tr.rolling(period).mean()
 
@@ -72,12 +72,12 @@ def rule_signal(last: pd.Series, params: dict) -> int:
     trend_ok = (last["MA_FAST"] > last["MA_SLOW"]) and (last["Close"] > last["MA_FAST"])
     vol_ok = (last["VOL_RATIO"] >= float(params["VOL_SPIKE"]))
     atr_ok = (float(params["ATR_PCT_MIN"]) <= last["ATR_PCT"] <= float(params["ATR_PCT_MAX"]))
-
     return int(trend_ok and vol_ok and atr_ok)
 
 
 def score_row(last: pd.Series) -> int:
     score = 0
+
     if last.get("MA_FAST", np.nan) > last.get("MA_SLOW", np.nan):
         score += 40
 
@@ -125,17 +125,17 @@ def build_reason_table(last: pd.Series, params: dict) -> pd.DataFrame:
 
     c1 = (ma_fast is not None) and (ma_slow is not None) and (ma_fast > ma_slow)
     c2 = (close is not None) and (ma_fast is not None) and (close > ma_fast)
-    rows.append({"조건": "추세: MA_FAST > MA_SLOW", "현재값": "" if ma_fast is None or ma_slow is None else f"{ma_fast:.2f} > {ma_slow:.2f}", "기준": "단기선이 장기선 위", "통과": bool(c1)})
-    rows.append({"조건": "추세: Close > MA_FAST", "현재값": "" if close is None or ma_fast is None else f"{close:.2f} > {ma_fast:.2f}", "기준": "종가가 단기선 위", "통과": bool(c2)})
+    rows.append({"조건": "추세: MA_FAST > MA_SLOW", "현재값": "" if ma_fast is None or ma_slow is None else f"{ma_fast:,.2f} > {ma_slow:,.2f}", "기준": "단기선이 장기선 위", "통과": bool(c1)})
+    rows.append({"조건": "추세: Close > MA_FAST", "현재값": "" if close is None or ma_fast is None else f"{close:,.2f} > {ma_fast:,.2f}", "기준": "종가가 단기선 위", "통과": bool(c2)})
 
     vol_spike = float(params["VOL_SPIKE"])
     c3 = (vol_ratio is not None) and (vol_ratio >= vol_spike)
-    rows.append({"조건": "거래량: VOL_RATIO >= VOL_SPIKE", "현재값": "" if vol_ratio is None else f"{vol_ratio:.2f}", "기준": f">= {vol_spike:.2f}", "통과": bool(c3)})
+    rows.append({"조건": "거래량: VOL_RATIO >= VOL_SPIKE", "현재값": "" if vol_ratio is None else f"{vol_ratio:,.2f}", "기준": f">= {vol_spike:,.2f}", "통과": bool(c3)})
 
     atr_min = float(params["ATR_PCT_MIN"])
     atr_max = float(params["ATR_PCT_MAX"])
     c4 = (atr_pct is not None) and (atr_min <= atr_pct <= atr_max)
-    rows.append({"조건": "변동성: ATR_PCT_MIN <= ATR_PCT <= ATR_PCT_MAX", "현재값": "" if atr_pct is None else f"{atr_pct*100:.2f}%", "기준": f"{atr_min*100:.2f}% ~ {atr_max*100:.2f}%", "통과": bool(c4)})
+    rows.append({"조건": "변동성: ATR_PCT_MIN <= ATR_PCT <= ATR_PCT_MAX", "현재값": "" if atr_pct is None else f"{atr_pct*100:,.2f}%", "기준": f"{atr_min*100:,.2f}% ~ {atr_max*100:,.2f}%", "통과": bool(c4)})
 
     return pd.DataFrame(rows)
 
@@ -154,7 +154,7 @@ def format_currency_for_display(market: str, v):
 
 
 # =========================
-# 데이터 로더
+# Data loaders
 # =========================
 def load_us(ticker: str) -> pd.DataFrame:
     df = yf.download(
@@ -167,16 +167,14 @@ def load_us(ticker: str) -> pd.DataFrame:
         threads=False,
     )
 
-    # MultiIndex 방어 (tuple 컬럼 에러 방지)
+    # MultiIndex(튜플 컬럼) 방어
     if isinstance(df.columns, pd.MultiIndex):
         lv0 = df.columns.get_level_values(0)
         lv1 = df.columns.get_level_values(1)
 
-        # (ticker, field)
-        if ticker in lv0:
+        if ticker in lv0:  # (ticker, field)
             df = df[ticker]
-        # (field, ticker)
-        elif ticker in lv1:
+        elif ticker in lv1:  # (field, ticker)
             df = df.xs(ticker, axis=1, level=1)
         else:
             uniq1 = list(pd.unique(lv1))
@@ -202,12 +200,12 @@ def load_kr(code: str) -> pd.DataFrame:
     end = datetime.now().strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=365 * DEFAULTS["LOOKBACK_YEARS"])).strftime("%Y-%m-%d")
     df = krx.get_market_ohlcv_by_date(start, end, code)
-    df = df.rename(columns={"시가":"Open","고가":"High","저가":"Low","종가":"Close","거래량":"Volume"})
+    df = df.rename(columns={"시가": "Open", "고가": "High", "저가": "Low", "종가": "Close", "거래량": "Volume"})
     return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
 
 # =========================
-# 매도 추천
+# Sell recommendation
 # =========================
 def sell_recommendation(last: pd.Series, params: dict, entry_price: float, entry_date: str):
     if entry_price is None or (isinstance(entry_price, float) and np.isnan(entry_price)) or entry_price <= 0:
@@ -234,7 +232,7 @@ def sell_recommendation(last: pd.Series, params: dict, entry_price: float, entry
         target_price = None
     else:
         stop_price = float(entry_price - float(params["STOP_ATR_MULT"]) * atr)
-        target_price = float(entry_price + 2 * (entry_price - stop_price))
+        target_price = float(entry_price + 2 * (entry_price - stop_price))  # 2R
 
     if stop_price is not None and close < stop_price:
         return "SELL", "손절가 이탈(ATR 기준)", stop_price, target_price, holding_days
@@ -258,7 +256,7 @@ def sell_recommendation(last: pd.Series, params: dict, entry_price: float, entry
 
 
 # =========================
-# 분석
+# Analyzer
 # =========================
 def analyze_one_with_df(ticker: str, params: dict):
     try:
@@ -303,7 +301,6 @@ def analyze_one_with_df(ticker: str, params: dict):
             "error": ""
         }
         return result, df_ind, reason_df
-
     except Exception as e:
         result = {
             "market": "?",
@@ -325,36 +322,28 @@ def analyze_one_with_df(ticker: str, params: dict):
 
 
 # =========================
-# positions 동기화 (리셋 방지 핵심)
-# - run 버튼 눌렀을 때만 호출
-# - 기존 entry 값 절대 보존
+# Positions sync (run 버튼에서만 호출)
 # =========================
 def sync_positions_with_tickers(tickers: list):
-    cur = st.session_state.get("positions", pd.DataFrame(columns=["ticker", "entry_price", "entry_date", "sell_mode"]))
+    cur = st.session_state.get("positions", pd.DataFrame(columns=["ticker", "entry_price", "entry_date"]))
 
     base = pd.DataFrame({"ticker": [str(t).upper() for t in tickers]})
-
     merged = base.merge(cur, on="ticker", how="left")
 
-    # 기본값 (기존 입력값은 유지)
     if "entry_price" not in merged.columns:
         merged["entry_price"] = np.nan
     if "entry_date" not in merged.columns:
         merged["entry_date"] = ""
-    if "sell_mode" not in merged.columns:
-        merged["sell_mode"] = "ATR 손절"
-
-    merged["sell_mode"] = merged["sell_mode"].fillna("ATR 손절")
 
     st.session_state["positions"] = merged
 
 
 # =========================
-# 엑셀 다운로드 (KRW/USD 서식 적용)
+# Excel (KRW/USD format)
 # =========================
 def apply_currency_formats_openpyxl(ws):
-    fmt_krw = u'₩#,##0'
-    fmt_usd = u'$#,##0.00'
+    fmt_krw = u"₩#,##0"
+    fmt_usd = u"$#,##0.00"
     price_cols = {"close", "stop", "target(2R)", "stop_by_entry", "target_by_entry(2R)"}
 
     header = {}
@@ -405,57 +394,53 @@ def build_excel_bytes(df_all: pd.DataFrame) -> bytes:
 
 
 # =========================
-# 차트 (수평선 포함)
+# Charts (Altair)
 # =========================
-def price_chart_with_lines(df_ind: pd.DataFrame, entry=None, stop=None, target=None):
-    d = df_ind.reset_index().rename(columns={df_ind.index.name or "index": "Date"})
-    # 어떤 인덱스든 Date 컬럼 만들기
+def _reset_index_as_date(df_ind: pd.DataFrame) -> pd.DataFrame:
+    d = df_ind.reset_index()
     if "Date" not in d.columns:
         d = d.rename(columns={d.columns[0]: "Date"})
     d["Date"] = pd.to_datetime(d["Date"])
+    return d
+
+
+def price_chart_with_lines(df_ind: pd.DataFrame, entry=None, stop=None, target=None):
+    d = _reset_index_as_date(df_ind)
 
     base = alt.Chart(d).encode(x="Date:T")
+    close_line = base.mark_line().encode(y=alt.Y("Close:Q", title="Price"))
+    ma_fast = base.mark_line(opacity=0.7).encode(y="MA_FAST:Q")
+    ma_slow = base.mark_line(opacity=0.7).encode(y="MA_SLOW:Q")
 
-    lines = base.mark_line().encode(
-        y=alt.Y("Close:Q", title="Price")
-    )
+    layers = [close_line, ma_fast, ma_slow]
 
-    ma_fast = base.mark_line().encode(y="MA_FAST:Q")
-    ma_slow = base.mark_line().encode(y="MA_SLOW:Q")
+    def rule(y):
+        return alt.Chart(pd.DataFrame({"y": [float(y)]})).mark_rule().encode(y="y:Q")
 
-    rule_layers = []
     if entry is not None and not (isinstance(entry, float) and np.isnan(entry)):
-        rule_layers.append(alt.Chart(pd.DataFrame({"y": [float(entry)]})).mark_rule().encode(y="y:Q"))
+        layers.append(rule(entry))
     if stop is not None and not (isinstance(stop, float) and np.isnan(stop)):
-        rule_layers.append(alt.Chart(pd.DataFrame({"y": [float(stop)]})).mark_rule().encode(y="y:Q"))
+        layers.append(rule(stop))
     if target is not None and not (isinstance(target, float) and np.isnan(target)):
-        rule_layers.append(alt.Chart(pd.DataFrame({"y": [float(target)]})).mark_rule().encode(y="y:Q"))
+        layers.append(rule(target))
 
-    chart = (lines + ma_fast + ma_slow)
-    for r in rule_layers:
-        chart = chart + r
-
-    return chart.properties(height=280)
+    return alt.layer(*layers).properties(height=280)
 
 
 def volume_chart(df_ind: pd.DataFrame):
-    d = df_ind.reset_index().rename(columns={df_ind.index.name or "index": "Date"})
-    if "Date" not in d.columns:
-        d = d.rename(columns={d.columns[0]: "Date"})
-    d["Date"] = pd.to_datetime(d["Date"])
-
+    d = _reset_index_as_date(df_ind)
     base = alt.Chart(d).encode(x="Date:T")
     vol = base.mark_line().encode(y=alt.Y("Volume:Q", title="Volume"))
-    avg = base.mark_line().encode(y="VOL_AVG:Q")
+    avg = base.mark_line(opacity=0.7).encode(y="VOL_AVG:Q")
     return (vol + avg).properties(height=180)
 
 
 # =========================
-# Streamlit UI
+# App
 # =========================
 st.set_page_config(page_title="Swing Scanner", layout="wide")
 
-# 제목 폰트 (방법 1)
+# Title font (방법 1)
 st.markdown(
     """
     <h1 style="font-size:36px;font-weight:700;margin-bottom:10px;">
@@ -465,162 +450,71 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# session_state 초기화 (절대 run 안에 넣지 말 것)
+# Session state init (절대 run 안에 넣지 말 것)
 if "analysis_df" not in st.session_state:
     st.session_state["analysis_df"] = None
 if "analysis_detail" not in st.session_state:
     st.session_state["analysis_detail"] = {}
 if "positions" not in st.session_state:
-    st.session_state["positions"] = pd.DataFrame(columns=["ticker", "entry_price", "entry_date", "sell_mode"])
+    st.session_state["positions"] = pd.DataFrame(columns=["ticker", "entry_price", "entry_date"])
 
 
+# -------------------------
+# Sidebar (카테고리별 expander + 설명 문구)
+# -------------------------
 with st.sidebar:
     st.header("📊 스윙 전략 설정")
+    params = {}
 
-    # ===============================
-    # 1. 추세 판단 (이동평균)
-    # ===============================
-    st.markdown("### ① 추세 판단 (이동평균)")
+    with st.expander("① 추세 판단 (이동평균)", expanded=True):
+        params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"], key="MA_FAST")
+        st.write(
+            "단기 주가 흐름을 보는 이동평균 기간입니다.\n"
+            "- 값이 작을수록 신호는 빠르지만 노이즈↑\n"
+            "- 값이 클수록 신호는 느리지만 안정적\n"
+            "👉 보통 10~30일, 기본값 20 권장"
+        )
+        params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"], key="MA_SLOW")
+        st.write(
+            "중·장기 추세 기준 이동평균입니다.\n"
+            "MA_FAST가 이 값 위면 상승 추세로 판단.\n"
+            "👉 보통 50~120일, 기본값 60 권장"
+        )
 
-    params["MA_FAST"] = st.number_input(
-        "MA_FAST (단기 이동평균)",
-        5, 200, DEFAULTS["MA_FAST"], key="MA_FAST"
-    )
-    st.write(
-        "단기 주가 흐름을 판단하는 이동평균 기간입니다.\n"
-        "- 값이 작을수록 신호가 빠르지만 실패 가능성 증가\n"
-        "- 값이 클수록 신호는 느리지만 안정적\n"
-        "👉 보통 **10~30일**, 기본값 20 권장"
-    )
+    with st.expander("② 거래량 · 변동성 조건", expanded=False):
+        params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"], key="VOL_LOOKBACK")
+        st.write("평균 거래량을 계산하는 기간입니다.")
+        params["VOL_SPIKE"] = st.number_input("VOL_SPIKE (거래량 급증 기준)", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05, key="VOL_SPIKE")
+        st.write("예: 1.5 → 평균 대비 150% 이상 거래량이면 통과")
+        params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"], key="ATR_PERIOD")
+        st.write("ATR은 평균 변동폭 지표입니다(손절/변동성 필터에 사용).")
+        params["ATR_PCT_MIN"] = st.number_input("ATR_PCT_MIN (최소 변동성)", 0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]), step=0.001, format="%.3f", key="ATR_PCT_MIN")
+        st.write("너무 안 움직이는 종목 제외용(최소 변동성)")
+        params["ATR_PCT_MAX"] = st.number_input("ATR_PCT_MAX (최대 변동성)", 0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]), step=0.001, format="%.3f", key="ATR_PCT_MAX")
+        st.write("너무 위험한 급등락 종목 제외용(최대 변동성)")
 
-    params["MA_SLOW"] = st.number_input(
-        "MA_SLOW (장기 이동평균)",
-        10, 300, DEFAULTS["MA_SLOW"], key="MA_SLOW"
-    )
-    st.write(
-        "중·장기 추세의 기준이 되는 이동평균입니다.\n"
-        "MA_FAST가 이 값 위에 있으면 상승 추세로 판단합니다.\n"
-        "👉 보통 **50~120일**, 기본값 60 권장"
-    )
+    with st.expander("③ 리스크 · 손절 · 보유 관리", expanded=False):
+        params["STOP_ATR_MULT"] = st.number_input("STOP_ATR_MULT (손절 ATR 배수)", 0.5, 5.0, float(DEFAULTS["STOP_ATR_MULT"]), step=0.1, key="STOP_ATR_MULT")
+        st.write("손절선을 ATR 기준으로 얼마나 넓게 둘지(보통 1.5~2.0)")
+        params["HOLD_DAYS"] = st.number_input("HOLD_DAYS (최대 보유일)", 1, 200, DEFAULTS["HOLD_DAYS"], key="HOLD_DAYS")
+        st.write("보유일이 너무 길어질 때 정리하는 기준(기회비용 관리)")
 
-    st.divider()
-
-    # ===============================
-    # 2. 거래량 / 변동성
-    # ===============================
-    st.markdown("### ② 거래량 · 변동성 조건")
-
-    params["VOL_LOOKBACK"] = st.number_input(
-        "VOL_LOOKBACK (거래량 평균 기간)",
-        5, 200, DEFAULTS["VOL_LOOKBACK"], key="VOL_LOOKBACK"
-    )
-    st.write(
-        "평균 거래량을 계산하는 기간입니다.\n"
-        "현재 거래량이 평소보다 얼마나 증가했는지 판단하는 기준입니다."
-    )
-
-    params["VOL_SPIKE"] = st.number_input(
-        "VOL_SPIKE (거래량 급증 기준)",
-        1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]),
-        step=0.05, key="VOL_SPIKE"
-    )
-    st.write(
-        "현재 거래량이 평균 대비 몇 배 이상일 때\n"
-        "‘의미 있는 수급 유입’으로 볼지 정합니다.\n"
-        "👉 예: **1.5 = 평균 대비 150%**"
-    )
-
-    params["ATR_PERIOD"] = st.number_input(
-        "ATR_PERIOD (ATR 계산 기간)",
-        5, 100, DEFAULTS["ATR_PERIOD"], key="ATR_PERIOD"
-    )
-    st.write(
-        "ATR은 주가의 평균 변동폭을 나타냅니다.\n"
-        "변동성이 너무 작은 종목과 너무 큰 종목을 걸러내는 데 사용합니다."
-    )
-
-    params["ATR_PCT_MIN"] = st.number_input(
-        "ATR_PCT_MIN (최소 변동성)",
-        0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]),
-        step=0.001, format="%.3f", key="ATR_PCT_MIN"
-    )
-    st.write(
-        "거의 움직이지 않는 종목을 제외하기 위한 최소 기준입니다."
-    )
-
-    params["ATR_PCT_MAX"] = st.number_input(
-        "ATR_PCT_MAX (최대 변동성)",
-        0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]),
-        step=0.001, format="%.3f", key="ATR_PCT_MAX"
-    )
-    st.write(
-        "급등락하는 고위험 종목을 제외하기 위한 상한선입니다."
-    )
-
-    st.divider()
-
-    # ===============================
-    # 3. 리스크 / 손절 / 보유
-    # ===============================
-    st.markdown("### ③ 리스크 · 손절 · 보유 관리")
-
-    params["STOP_ATR_MULT"] = st.number_input(
-        "STOP_ATR_MULT (손절 ATR 배수)",
-        0.5, 5.0, float(DEFAULTS["STOP_ATR_MULT"]),
-        step=0.1, key="STOP_ATR_MULT"
-    )
-    st.write(
-        "손절 가격을 ATR 기준으로 얼마나 여유 있게 둘지 정합니다.\n"
-        "👉 일반적으로 **1.5 ~ 2.0** 범위를 많이 사용합니다."
-    )
-
-    params["HOLD_DAYS"] = st.number_input(
-        "HOLD_DAYS (최대 보유일)",
-        1, 200, DEFAULTS["HOLD_DAYS"], key="HOLD_DAYS"
-    )
-    st.write(
-        "신호가 유효하더라도 너무 오래 끌지 않기 위한 기준입니다.\n"
-        "👉 스윙 전략에서는 보통 **10~30일**"
-    )
-
-    st.divider()
-
-    # ===============================
-    # 4. 계좌 가정값
-    # ===============================
-    st.markdown("### ④ 계좌 가정값 (계산용)")
-
-    params["ACCOUNT_SIZE"] = st.number_input(
-        "ACCOUNT_SIZE (총 투자금)",
-        100_000, 1_000_000_000,
-        DEFAULTS["ACCOUNT_SIZE"],
-        step=100_000, key="ACCOUNT_SIZE"
-    )
-    st.write(
-        "실제 주문과 무관한 **가상 계좌 금액**입니다.\n"
-        "포지션 수량 계산에만 사용됩니다."
-    )
-
-    params["RISK_PER_TRADE"] = st.number_input(
-        "RISK_PER_TRADE (1회 최대 손실 비율)",
-        0.001, 0.05,
-        float(DEFAULTS["RISK_PER_TRADE"]),
-        step=0.001, format="%.3f", key="RISK_PER_TRADE"
-    )
-    st.write(
-        "한 종목에서 감수할 최대 손실 비율입니다.\n"
-        "👉 예: 0.01 = 계좌의 1%"
-    )
+    with st.expander("④ 계좌 가정값 (계산용)", expanded=False):
+        params["ACCOUNT_SIZE"] = st.number_input("ACCOUNT_SIZE (총 투자금)", 100_000, 1_000_000_000, DEFAULTS["ACCOUNT_SIZE"], step=100_000, key="ACCOUNT_SIZE")
+        st.write("포지션 수량 계산에만 쓰는 가상 계좌 금액")
+        params["RISK_PER_TRADE"] = st.number_input("RISK_PER_TRADE (1회 최대 손실 비율)", 0.001, 0.05, float(DEFAULTS["RISK_PER_TRADE"]), step=0.001, format="%.3f", key="RISK_PER_TRADE")
+        st.write("예: 0.01 → 한 종목에서 계좌의 1%까지만 손실 허용")
 
 
+# -------------------------
+# Inputs
+# -------------------------
 st.write("입력: KR은 6자리(예: 005930), US는 티커(예: SPY). 콤마/줄바꿈/공백 가능.")
 raw = st.text_area("티커 입력", value="005930 000660\nSPY QQQ", height=120, key="ticker_input")
 
 run = st.button("분석 실행", key="run_button")
 
-# ----------------------------
-# run 버튼을 눌렀을 때만 분석 결과/positions 동기화
-# ----------------------------
+# ✅ run 버튼을 눌렀을 때만 분석/동기화
 if run:
     tickers = normalize_tickers(raw)
     if not tickers:
@@ -638,16 +532,16 @@ if run:
         df = pd.DataFrame(results)
         df = df.sort_values(["candidate", "score"], ascending=[False, False]).reset_index(drop=True)
 
-        # ✅ 분석 결과를 session_state에 저장 (사이드바 조작해도 유지)
         st.session_state["analysis_df"] = df
         st.session_state["analysis_detail"] = detail_map
 
-        # ✅ positions는 run 때만 티커 동기화 (기존 입력값 유지)
+        # ✅ positions는 run에서만 종목 리스트와 동기화(기존 입력값 유지)
         sync_positions_with_tickers(df["ticker"].tolist())
 
-# ----------------------------
-# 아래부터는 run 여부와 무관: 저장된 결과/입력값 표시
-# ----------------------------
+
+# -------------------------
+# Render saved state
+# -------------------------
 df_saved = st.session_state.get("analysis_df", None)
 detail_saved = st.session_state.get("analysis_detail", {})
 
@@ -655,7 +549,9 @@ if df_saved is None or df_saved.empty:
     st.info("분석 실행을 눌러 결과를 생성하세요.")
     st.stop()
 
-# positions editor (항상 session_state를 직접 편집)
+# -------------------------
+# Positions editor (리셋 방지)
+# -------------------------
 st.markdown("---")
 st.subheader("보유 입력 (리셋 방지)")
 
@@ -668,13 +564,10 @@ positions = st.data_editor(
         "ticker": st.column_config.TextColumn("ticker", disabled=True),
         "entry_price": st.column_config.NumberColumn("평단(진입가)", format="%.4f"),
         "entry_date": st.column_config.TextColumn("보유 시작일(YYYY-MM-DD)"),
-        "sell_mode": st.column_config.SelectboxColumn("매도 기준", options=["ATR 손절"], disabled=True),
-    }
+    },
 )
-# ✅ 저장 (이 줄이 없으면 리셋됩니다)
-st.session_state["positions"] = positions
+st.session_state["positions"] = positions  # ✅ 저장
 
-# positions -> dict
 pos_map = {}
 for _, r in positions.iterrows():
     pos_map[str(r["ticker"]).upper()] = {
@@ -682,7 +575,9 @@ for _, r in positions.iterrows():
         "entry_date": r.get("entry_date", ""),
     }
 
-# df에 매도 추천 컬럼 추가 (표시/엑셀 모두 포함)
+# -------------------------
+# Add sell columns
+# -------------------------
 df_out = df_saved.copy()
 
 sell_signals, sell_reasons = [], []
@@ -690,6 +585,7 @@ stop_by_entry_list, target_by_entry_list, hold_days_list = [], [], []
 
 for _, row in df_out.iterrows():
     tkr = str(row["ticker"]).upper()
+
     if tkr not in detail_saved:
         sell_signals.append("N/A")
         sell_reasons.append("근거 데이터 없음")
@@ -718,25 +614,28 @@ df_out["hold_days"] = hold_days_list
 df_out["stop_by_entry"] = stop_by_entry_list
 df_out["target_by_entry(2R)"] = target_by_entry_list
 
-# ----------------------------
-# 결과 표 (색상 강조)
-# ----------------------------
+# -------------------------
+# Result table (with highlight)
+# -------------------------
 st.markdown("---")
 st.subheader("결과 (매수/매도 추천 포함)")
 
 def highlight_sell_signal(val):
     if val == "SELL":
-        return "background-color: rgba(255, 0, 0, 0.15);"
+        return "background-color: rgba(255,0,0,0.15);"
     if val == "PARTIAL SELL":
-        return "background-color: rgba(255, 165, 0, 0.15);"
+        return "background-color: rgba(255,165,0,0.15);"
     if val == "HOLD":
-        return "background-color: rgba(128, 128, 128, 0.12);"
+        return "background-color: rgba(128,128,128,0.12);"
     return ""
 
 df_view = df_out.copy()
 for c in ["close", "stop", "target(2R)", "stop_by_entry", "target_by_entry(2R)"]:
     if c in df_view.columns:
-        df_view[c] = df_view.apply(lambda r: format_currency_for_display(r.get("market", ""), r.get(c, None)), axis=1)
+        df_view[c] = df_view.apply(
+            lambda r: format_currency_for_display(r.get("market", ""), r.get(c, None)),
+            axis=1,
+        )
 
 styled = df_view.style.applymap(highlight_sell_signal, subset=["sell_signal"])
 st.dataframe(styled, use_container_width=True)
@@ -747,9 +646,9 @@ if n_cand == 0:
 else:
     st.success(f"후보(O) {n_cand}개")
 
-# ----------------------------
-# 근거 (표 + 차트 + 수평선)
-# ----------------------------
+# -------------------------
+# Evidence (table + charts + lines)
+# -------------------------
 st.markdown("---")
 st.subheader("근거(조건표 + 차트)")
 
@@ -778,7 +677,6 @@ for _, row in df_out.iterrows():
         entry_price = pos_map.get(tkr, {}).get("entry_price", np.nan)
         entry_date = pos_map.get(tkr, {}).get("entry_date", "")
 
-        # 평단 기준 손절/목표 계산(있을 때만)
         if entry_price is not None and not (isinstance(entry_price, float) and np.isnan(entry_price)) and entry_price > 0:
             last = df_ind.iloc[-1]
             _, _, stop_e, target_e, _ = sell_recommendation(last, params, float(entry_price), entry_date)
@@ -786,7 +684,10 @@ for _, row in df_out.iterrows():
             stop_e, target_e = None, None
 
         st.write("가격 차트 (Close + MA + 평단/손절/목표 수평선)")
-        st.altair_chart(price_chart_with_lines(df_ind, entry=entry_price, stop=stop_e, target=target_e), use_container_width=True)
+        st.altair_chart(
+            price_chart_with_lines(df_ind, entry=entry_price, stop=stop_e, target=target_e),
+            use_container_width=True,
+        )
 
         st.write("거래량 차트 (Volume + 평균)")
         st.altair_chart(volume_chart(df_ind), use_container_width=True)
@@ -799,9 +700,9 @@ for _, row in df_out.iterrows():
             f"- sell_reason: {row.get('sell_reason','')}"
         )
 
-# ----------------------------
-# 엑셀 다운로드 (통화 서식 포함)
-# ----------------------------
+# -------------------------
+# Excel download
+# -------------------------
 st.markdown("---")
 st.subheader("엑셀 다운로드")
 
@@ -810,5 +711,5 @@ st.download_button(
     label="엑셀 다운로드 (KR ₩ / US $ 자동 적용)",
     data=xlsx_bytes,
     file_name="Swing_Scanner_Output.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
