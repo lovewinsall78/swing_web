@@ -499,11 +499,21 @@ with st.sidebar:
         params["HOLD_DAYS"] = st.number_input("HOLD_DAYS (최대 보유일)", 1, 200, DEFAULTS["HOLD_DAYS"], key="HOLD_DAYS")
         st.write("보유일이 너무 길어질 때 정리하는 기준(기회비용 관리)")
 
-    with st.expander("④ 계좌 가정값 (계산용)", expanded=False):
-        params["ACCOUNT_SIZE"] = st.number_input("ACCOUNT_SIZE (총 투자금)", 100_000, 1_000_000_000, DEFAULTS["ACCOUNT_SIZE"], step=100_000, key="ACCOUNT_SIZE")
-        st.write("포지션 수량 계산에만 쓰는 가상 계좌 금액")
-        params["RISK_PER_TRADE"] = st.number_input("RISK_PER_TRADE (1회 최대 손실 비율)", 0.001, 0.05, float(DEFAULTS["RISK_PER_TRADE"]), step=0.001, format="%.3f", key="RISK_PER_TRADE")
-        st.write("예: 0.01 → 한 종목에서 계좌의 1%까지만 손실 허용")
+   with st.expander("④ 계좌 가정값 (계산용)", expanded=False):
+
+    acc_str = st.text_input(
+        "ACCOUNT_SIZE (총 투자금, ₩)",
+        value=f"{int(st.session_state.get('ACCOUNT_SIZE', DEFAULTS['ACCOUNT_SIZE'])):,}",
+        key="ACCOUNT_SIZE_TEXT"
+    )
+    st.write("천단위 콤마 입력 가능 (예: 10,000,000)")
+
+    # 숫자로 안전 변환
+    try:
+        params["ACCOUNT_SIZE"] = int(acc_str.replace(",", ""))
+        st.session_state["ACCOUNT_SIZE"] = params["ACCOUNT_SIZE"]
+    except:
+        params["ACCOUNT_SIZE"] = DEFAULTS["ACCOUNT_SIZE"]
 
 
 # -------------------------
