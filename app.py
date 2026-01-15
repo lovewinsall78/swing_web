@@ -7,10 +7,9 @@ from pykrx import stock as krx
 import streamlit as st
 from datetime import datetime, timedelta
 import altair as alt
-from openpyxl import load_workbook  # (openpyxl 엔진 내부 사용)
 
 # =========================
-# 기본값
+# Defaults
 # =========================
 DEFAULTS = dict(
     MA_FAST=20,
@@ -28,7 +27,7 @@ DEFAULTS = dict(
 )
 
 # =========================
-# 유틸
+# Helpers
 # =========================
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", x.strip()))
@@ -42,7 +41,7 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     prev_close = close.shift(1)
     tr = pd.concat(
         [(high - low), (high - prev_close).abs(), (low - prev_close).abs()],
-        axis=1
+        axis=1,
     ).max(axis=1)
     return tr.rolling(period).mean()
 
@@ -70,12 +69,15 @@ def score_row(last: pd.Series) -> int:
     score = 0
     if last.get("MA_FAST", np.nan) > last.get("MA_SLOW", np.nan):
         score += 40
+
     vr = last.get("VOL_RATIO", np.nan)
     if pd.notna(vr):
         score += int(min(25, max(0, (vr - 1.0) * 20)))
+
     r20 = last.get("RET_20", np.nan)
     if pd.notna(r20):
         score += int(min(20, max(0, r20 * 200)))
+
     ap = last.get("ATR_PCT", np.nan)
     if pd.notna(ap):
         if ap > 0.045:
@@ -84,6 +86,7 @@ def score_row(last: pd.Series) -> int:
             score -= 5
         else:
             score += 10
+
     return int(score)
 
 def position_size(entry: float, atr: float, account_size: float, risk_per_trade: float, stop_atr_mult: float):
@@ -106,19 +109,40 @@ def build_reason_table(last: pd.Series, params: dict) -> pd.DataFrame:
     atr_pct = safe(last.get("ATR_PCT", np.nan))
 
     rows = []
+
     c1 = (ma_fast is not None) and (ma_slow is not None) and (ma_fast > ma_slow)
     c2 = (close is not None) and (ma_fast is not None) and (close > ma_fast)
-    rows.append({"조건": "추세: MA_FAST > MA_SLOW", "현재값": "데이터 부족" if ma_fast is None or ma_slow is None else f"{ma_fast:.2f} > {ma_slow:.2f}", "기준": "단기선이 장기선 위", "통과": bool(c1)})
-    rows.append({"조건": "추세: Close > MA_FAST", "현재값": "데이터 부족" if close is None or ma_fast is None else f"{close:.2f} > {ma_fast:.2f}", "기준": "종가가 단기선 위", "통과": bool(c2)})
+    rows.append({
+        "조건": "추세: MA_FAST > MA_SLOW",
+        "현재값": "데이터 부족" if (ma_fast is None or ma_slow is None) else f"{ma_fast:.2f} > {ma_slow:.2f}",
+        "기준": "단기선이 장기선 위",
+        "통과": bool(c1),
+    })
+    rows.append({
+        "조건": "추세: Close > MA_FAST",
+        "현재값": "데이터 부족" if (close is None or ma_fast is None) else f"{close:.2f} > {ma_fast:.2f}",
+        "기준": "종가가 단기선 위",
+        "통과": bool(c2),
+    })
 
     vol_spike = float(params["VOL_SPIKE"])
     c3 = (vol_ratio is not None) and (vol_ratio >= vol_spike)
-    rows.append({"조건": "거래량: VOL_RATIO >= VOL_SPIKE", "현재값": "데이터 부족" if vol_ratio is None else f"{vol_ratio:.2f}", "기준": f">= {vol_spike:.2f}", "통과": bool(c3)})
+    rows.append({
+        "조건": "거래량: VOL_RATIO >= VOL_SPIKE",
+        "현재값": "데이터 부족" if vol_ratio is None else f"{vol_ratio:.2f}",
+        "기준": f">= {vol_spike:.2f}",
+        "통과": bool(c3),
+    })
 
     atr_min = float(params["ATR_PCT_MIN"])
     atr_max = float(params["ATR_PCT_MAX"])
     c4 = (atr_pct is not None) and (atr_min <= atr_pct <= atr_max)
-    rows.append({"조건": "변동성: ATR_PCT_MIN <= ATR_PCT <= ATR_PCT_MAX", "현재값": "데이터 부족" if atr_pct is None else f"{atr_pct*100:.2f}%", "기준": f"{atr_min*100:.2f}% ~ {atr_max*100:.2f}%", "통과": bool(c4)})
+    rows.append({
+        "조건": "변동성: ATR_PCT_MIN <= ATR_PCT <= ATR_PCT_MAX",
+        "현재값": "데이터 부족" if atr_pct is None else f"{atr_pct*100:.2f}%",
+        "기준": f"{atr_min*100:.2f}% ~ {atr_max*100:.2f}%",
+        "통과": bool(c4),
+    })
 
     return pd.DataFrame(rows)
 
@@ -135,7 +159,29 @@ def format_currency_for_display(market: str, v):
         return str(v)
 
 # =========================
-# 데이터 로더
+# Entry parsing (KR/US)
+# =========================
+def parse_entry_text(market: str, s: str):
+    """
+    KR: ₩10,000,000 / 10,000,000 / 10000000 -> int(원)
+    US: $123.45 / 1,234.56 / 123.4         -> float(달러, 2dp)
+    """
+    if s is None:
+        return np.nan
+    t = str(s).strip()
+    if t == "":
+        return np.nan
+
+    t = t.replace("₩", "").replace("$", "").replace(" ", "").replace(",", "")
+    try:
+        if market == "KR":
+            return int(float(t))
+        return round(float(t), 2)
+    except Exception:
+        return np.nan
+
+# =========================
+# Data loaders
 # =========================
 def load_us(ticker: str) -> pd.DataFrame:
     df = yf.download(
@@ -148,7 +194,7 @@ def load_us(ticker: str) -> pd.DataFrame:
         threads=False,
     )
 
-    # ✅ MultiIndex 방어: tuple 컬럼 -> ticker 블록만 추출
+    # ✅ MultiIndex 방어
     if isinstance(df.columns, pd.MultiIndex):
         lv0 = df.columns.get_level_values(0)
         lv1 = df.columns.get_level_values(1)
@@ -160,13 +206,13 @@ def load_us(ticker: str) -> pd.DataFrame:
         elif ticker in lv1:
             df = df.xs(ticker, axis=1, level=1)
         else:
-            # fallback: 첫 ticker 블록
             uniq1 = list(pd.unique(lv1))
             if uniq1:
                 df = df.xs(uniq1[0], axis=1, level=1)
             else:
                 raise ValueError(f"Unexpected MultiIndex columns: {df.columns}")
 
+    # tuple 컬럼이면 str로 변환 후 title
     df = df.rename(columns=lambda c: str(c).title())
 
     if "Close" not in df.columns and "Adj Close" in df.columns:
@@ -187,10 +233,9 @@ def load_kr(code: str) -> pd.DataFrame:
     return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
 
 # =========================
-# 매도 추천
+# Sell recommendation
 # =========================
 def sell_recommendation(last: pd.Series, params: dict, entry_price: float, entry_date: str):
-    # entry 없으면 판단 불가
     if entry_price is None or (isinstance(entry_price, float) and np.isnan(entry_price)) or entry_price <= 0:
         return "N/A", "평단(진입가) 입력 필요", None, None, None
 
@@ -204,6 +249,8 @@ def sell_recommendation(last: pd.Series, params: dict, entry_price: float, entry
 
     close = float(last.get("Close", np.nan))
     atr = float(last.get("ATR", np.nan))
+    ma_fast = float(last.get("MA_FAST", np.nan)) if pd.notna(last.get("MA_FAST", np.nan)) else np.nan
+    ma_slow = float(last.get("MA_SLOW", np.nan)) if pd.notna(last.get("MA_SLOW", np.nan)) else np.nan
 
     if pd.isna(close):
         return "N/A", "종가 데이터 부족", None, None, holding_days
@@ -215,17 +262,15 @@ def sell_recommendation(last: pd.Series, params: dict, entry_price: float, entry
         stop_price = float(entry_price - float(params["STOP_ATR_MULT"]) * atr)
         target_price = float(entry_price + 2 * (entry_price - stop_price))  # 2R
 
-    # 1) 손절
+    # 1) ATR 손절
     if stop_price is not None and close < stop_price:
         return "SELL", "손절가 이탈(ATR 기준)", stop_price, target_price, holding_days
 
-    # 2) 목표가
+    # 2) 목표가 도달
     if target_price is not None and close >= target_price:
         return "PARTIAL SELL", "목표가(2R) 도달", stop_price, target_price, holding_days
 
     # 3) 추세 이탈
-    ma_fast = last.get("MA_FAST", np.nan)
-    ma_slow = last.get("MA_SLOW", np.nan)
     trend_exit = False
     if pd.notna(ma_fast) and close < ma_fast:
         trend_exit = True
@@ -241,7 +286,7 @@ def sell_recommendation(last: pd.Series, params: dict, entry_price: float, entry
     return "HOLD", "추세 유지", stop_price, target_price, holding_days
 
 # =========================
-# 분석(티커 1개)
+# Analyzer
 # =========================
 def analyze_one_with_df(ticker: str, params: dict):
     try:
@@ -307,73 +352,92 @@ def analyze_one_with_df(ticker: str, params: dict):
         return result, None, None
 
 # =========================
-# positions 동기화(리셋 방지 핵심)
-# - run 버튼 눌렀을 때만 호출
-# - 기존 entry 값 보존
+# Positions sync (run 버튼에서만!)
 # =========================
-def sync_positions_with_tickers(tickers: list):
-    cur = st.session_state.get("positions", pd.DataFrame(columns=["ticker", "entry_price", "entry_date"]))
+def sync_positions_with_tickers(df_analysis: pd.DataFrame):
+    """
+    run 버튼 눌렀을 때만 호출
+    - ticker/market만 최신화
+    - 사용자가 입력한 entry_text/entry_price/entry_date는 유지
+    - positions_editor도 같이 갱신 (리셋 방지 핵심)
+    """
+    cur = st.session_state["positions"].copy()
 
-    base = pd.DataFrame({"ticker": [str(t).upper() for t in tickers]})
-    merged = base.merge(cur, on="ticker", how="left")
+    base = df_analysis[["ticker", "market"]].copy()
+    base["ticker"] = base["ticker"].astype(str).str.upper()
+    base["market"] = base["market"].astype(str)
 
+    merged = base.merge(cur, on=["ticker", "market"], how="left")
+
+    if "entry_text" not in merged.columns:
+        merged["entry_text"] = ""
     if "entry_price" not in merged.columns:
         merged["entry_price"] = np.nan
     if "entry_date" not in merged.columns:
         merged["entry_date"] = ""
 
     st.session_state["positions"] = merged
+    st.session_state["positions_editor"] = merged.copy()  # ✅ 위젯 상태 동기화
 
 # =========================
-# 엑셀 다운로드 (KRW/USD 서식)
+# Excel export (KRW/USD format)
 # =========================
-def apply_currency_formats_openpyxl(ws):
-    fmt_krw = u"₩#,##0"
-    fmt_usd = u"$#,##0.00"
-    price_cols = {"close", "stop", "target(2R)", "stop_by_entry", "target_by_entry(2R)"}
-
-    header = {}
-    for col in range(1, ws.max_column + 1):
-        v = ws.cell(row=1, column=col).value
-        if isinstance(v, str):
-            header[v.strip()] = col
-
-    if "market" not in header:
-        return
-    market_col = header["market"]
-    price_idxs = [header[c] for c in price_cols if c in header]
-    if not price_idxs:
-        return
-
-    for r in range(2, ws.max_row + 1):
-        mkt = ws.cell(row=r, column=market_col).value
-        numfmt = fmt_krw if mkt == "KR" else (fmt_usd if mkt == "US" else None)
-        if not numfmt:
-            continue
-        for c in price_idxs:
-            cell = ws.cell(row=r, column=c)
-            if isinstance(cell.value, (int, float)) and cell.value is not None:
-                cell.number_format = numfmt
-
-def build_excel_bytes(df_all: pd.DataFrame) -> bytes:
+def build_excel_bytes_with_formats(df_all: pd.DataFrame) -> bytes:
+    """
+    pandas -> openpyxl 엔진으로 저장 후,
+    market 컬럼 기준으로 금액 컬럼 서식 적용
+    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_all.to_excel(writer, sheet_name="Signals_All", index=False)
 
-        df_cand = df_all[df_all["candidate"] == 1].copy()
+        df_cand = df_all[df_all.get("candidate", 0) == 1].copy()
         if df_cand.empty:
             df_cand = pd.DataFrame([{"note": "nottoday"}])
         df_cand.to_excel(writer, sheet_name="Candidates", index=False)
 
         wb = writer.book
+
+        def apply_formats(ws):
+            fmt_krw = u"₩#,##0"
+            fmt_usd = u"$#,##0.00"
+            price_cols = {
+                "close", "stop", "target(2R)",
+                "entry_price", "stop_by_entry", "target_by_entry(2R)"
+            }
+
+            header = {}
+            for col in range(1, ws.max_column + 1):
+                v = ws.cell(row=1, column=col).value
+                if isinstance(v, str):
+                    header[v.strip()] = col
+
+            if "market" not in header:
+                return
+
+            market_col = header["market"]
+            price_idxs = [header[c] for c in price_cols if c in header]
+            if not price_idxs:
+                return
+
+            for r in range(2, ws.max_row + 1):
+                mkt = ws.cell(row=r, column=market_col).value
+                numfmt = fmt_krw if mkt == "KR" else (fmt_usd if mkt == "US" else None)
+                if not numfmt:
+                    continue
+                for c in price_idxs:
+                    cell = ws.cell(row=r, column=c)
+                    if isinstance(cell.value, (int, float)) and cell.value is not None:
+                        cell.number_format = numfmt
+
         for name in ["Signals_All", "Candidates"]:
             if name in wb.sheetnames:
-                apply_currency_formats_openpyxl(wb[name])
+                apply_formats(wb[name])
 
     return output.getvalue()
 
 # =========================
-# 차트 (Altair)
+# Charts (Altair)
 # =========================
 def _reset_index_as_date(df_ind: pd.DataFrame) -> pd.DataFrame:
     d = df_ind.reset_index()
@@ -411,7 +475,7 @@ def volume_chart(df_ind: pd.DataFrame):
     return (vol + avg).properties(height=180)
 
 # =========================
-# Streamlit App
+# App UI
 # =========================
 st.set_page_config(page_title="Swing Scanner", layout="wide")
 
@@ -425,19 +489,29 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# session_state 초기화(절대 run 안에 두지 않기)
+# -------------------------
+# Session init
+# -------------------------
 if "analysis_df" not in st.session_state:
     st.session_state["analysis_df"] = None
 if "analysis_detail" not in st.session_state:
     st.session_state["analysis_detail"] = {}
+
+# positions 원본(우리가 계산에 쓰는 데이터)
 if "positions" not in st.session_state:
-    st.session_state["positions"] = pd.DataFrame(columns=["ticker", "entry_price", "entry_date"])
+    st.session_state["positions"] = pd.DataFrame(
+        columns=["ticker", "market", "entry_text", "entry_price", "entry_date"]
+    )
+# data_editor 위젯 전용 상태(입력 롤백 방지 핵심)
+if "positions_editor" not in st.session_state:
+    st.session_state["positions_editor"] = st.session_state["positions"].copy()
+
 if "ACCOUNT_SIZE" not in st.session_state:
     st.session_state["ACCOUNT_SIZE"] = DEFAULTS["ACCOUNT_SIZE"]
 
-# =========================
-# Sidebar (카테고리 + expander + 설명)
-# =========================
+# -------------------------
+# Sidebar
+# -------------------------
 with st.sidebar:
     st.header("📊 스윙 전략 설정")
     params = {}
@@ -473,11 +547,10 @@ with st.sidebar:
             key="ACCOUNT_SIZE_TEXT"
         )
         st.write("예: 10,000,000 처럼 콤마 입력 가능")
-
         try:
-            params["ACCOUNT_SIZE"] = int(acc_str.replace(",", ""))
+            params["ACCOUNT_SIZE"] = int(str(acc_str).replace(",", "").strip())
             st.session_state["ACCOUNT_SIZE"] = params["ACCOUNT_SIZE"]
-        except:
+        except Exception:
             params["ACCOUNT_SIZE"] = st.session_state["ACCOUNT_SIZE"]
 
         params["RISK_PER_TRADE"] = st.number_input(
@@ -487,15 +560,13 @@ with st.sidebar:
         )
         st.write("예: 0.01 = 계좌의 1% 손실까지 허용.")
 
-# =========================
-# 입력/실행
-# =========================
+# -------------------------
+# Inputs / Run
+# -------------------------
 st.write("입력: KR은 6자리(예: 005930), US는 티커(예: SPY). 콤마/줄바꿈/공백 가능.")
 raw = st.text_area("티커 입력", value="005930 000660\nSPY QQQ", height=120, key="ticker_input")
-
 run = st.button("분석 실행", key="run_button")
 
-# ✅ run 버튼 눌렀을 때만 분석 + positions 동기화
 if run:
     tickers = normalize_tickers(raw)
     if not tickers:
@@ -516,12 +587,12 @@ if run:
         st.session_state["analysis_df"] = df
         st.session_state["analysis_detail"] = detail_map
 
-        # ✅ 여기서만 positions 티커 동기화(기존 평단 유지)
-        sync_positions_with_tickers(df["ticker"].tolist())
+        # ✅ run 버튼에서만 종목/마켓 동기화 (기존 입력값 유지)
+        sync_positions_with_tickers(df)
 
-# =========================
-# 저장된 결과 렌더링 (사이드바 조작해도 유지)
-# =========================
+# -------------------------
+# Render saved analysis
+# -------------------------
 df_saved = st.session_state.get("analysis_df", None)
 detail_saved = st.session_state.get("analysis_detail", {})
 
@@ -529,43 +600,80 @@ if df_saved is None or df_saved.empty:
     st.info("분석 실행을 눌러 결과를 생성하세요.")
     st.stop()
 
-# ----------------------------
-# positions editor (리셋 방지)
-# ----------------------------
+# -------------------------
+# Positions editor (NO ROLLBACK)
+# -------------------------
 st.markdown("---")
-st.subheader("보유 입력 (리셋 방지)")
+st.subheader("보유 입력 (입력 롤백/리셋 방지 + KR/US 통화 입력)")
 
-positions = st.data_editor(
-    st.session_state["positions"],
+st.write(
+    "- KR 예시: `₩10,000,000` 또는 `10,000,000` 또는 `10000000`\n"
+    "- US 예시: `$123.45` 또는 `123.45` 또는 `1,234.56`\n"
+    "입력값은 `entry_text`로 저장되고, 계산용 숫자는 `entry_price`로 자동 파싱됩니다."
+)
+
+def _apply_editor_to_positions():
+    ed = st.session_state["positions_editor"].copy()
+
+    parsed = []
+    for _, r in ed.iterrows():
+        mkt = str(r.get("market", "")).strip()
+        txt = r.get("entry_text", "")
+        parsed.append(parse_entry_text(mkt, txt))
+    ed["entry_price"] = parsed
+
+    # ✅ 원본 저장 + 위젯 상태도 같이 업데이트
+    st.session_state["positions"] = ed
+    st.session_state["positions_editor"] = ed
+
+st.data_editor(
+    st.session_state["positions_editor"],
     key="positions_editor",
     use_container_width=True,
     num_rows="fixed",
+    on_change=_apply_editor_to_positions,
     column_config={
         "ticker": st.column_config.TextColumn("ticker", disabled=True),
-        "entry_price": st.column_config.NumberColumn("평단(진입가)", format="%.4f"),
+        "market": st.column_config.TextColumn("market", disabled=True),
+        "entry_text": st.column_config.TextColumn("평단 입력(통화 포함 가능)"),
+        "entry_price": st.column_config.NumberColumn("파싱된 평단(계산용)", disabled=True, format="%.2f"),
         "entry_date": st.column_config.TextColumn("보유 시작일(YYYY-MM-DD)"),
-    }
+    },
 )
-# ✅ editor 결과 저장 (이 줄 없으면 리셋됨)
-st.session_state["positions"] = positions
 
+# 최신 원본 가져오기
+positions = st.session_state["positions"].copy()
+
+# ticker+market -> entry map
 pos_map = {}
 for _, r in positions.iterrows():
-    pos_map[str(r["ticker"]).upper()] = {
+    k = (str(r["ticker"]).upper(), str(r["market"]))
+    pos_map[k] = {
+        "entry_text": r.get("entry_text", ""),
         "entry_price": r.get("entry_price", np.nan),
         "entry_date": r.get("entry_date", ""),
     }
 
-# ----------------------------
-# df_out: 매도 추천 컬럼 추가
-# ----------------------------
+# -------------------------
+# Add sell columns
+# -------------------------
 df_out = df_saved.copy()
 
 sell_signals, sell_reasons = [], []
 stop_by_entry_list, target_by_entry_list, hold_days_list = [], [], []
+entry_price_list, entry_text_list = [], []
 
 for _, row in df_out.iterrows():
     tkr = str(row["ticker"]).upper()
+    mkt = str(row["market"])
+    key = (tkr, mkt)
+
+    entry_price = pos_map.get(key, {}).get("entry_price", np.nan)
+    entry_text  = pos_map.get(key, {}).get("entry_text", "")
+    entry_date  = pos_map.get(key, {}).get("entry_date", "")
+
+    entry_price_list.append(entry_price)
+    entry_text_list.append(entry_text)
 
     if tkr not in detail_saved:
         sell_signals.append("N/A")
@@ -578,9 +686,6 @@ for _, row in df_out.iterrows():
     df_ind, _reason_df = detail_saved[tkr]
     last = df_ind.iloc[-1]
 
-    entry_price = pos_map.get(tkr, {}).get("entry_price", np.nan)
-    entry_date = pos_map.get(tkr, {}).get("entry_date", "")
-
     sig, reason, stp, tgt, hd = sell_recommendation(last, params, entry_price, entry_date)
 
     sell_signals.append(sig)
@@ -589,15 +694,17 @@ for _, row in df_out.iterrows():
     target_by_entry_list.append(np.nan if tgt is None else float(tgt))
     hold_days_list.append(np.nan if hd is None else int(hd))
 
+df_out["entry_text"] = entry_text_list
+df_out["entry_price"] = entry_price_list
 df_out["sell_signal"] = sell_signals
 df_out["sell_reason"] = sell_reasons
 df_out["hold_days"] = hold_days_list
 df_out["stop_by_entry"] = stop_by_entry_list
 df_out["target_by_entry(2R)"] = target_by_entry_list
 
-# ----------------------------
-# 결과 표(통화 표시 + 매도 하이라이트)
-# ----------------------------
+# -------------------------
+# Result table (currency display + highlight)
+# -------------------------
 st.markdown("---")
 st.subheader("결과 (매수/매도 추천 포함)")
 
@@ -611,7 +718,7 @@ def highlight_sell_signal(val):
     return ""
 
 df_view = df_out.copy()
-for c in ["close", "stop", "target(2R)", "stop_by_entry", "target_by_entry(2R)"]:
+for c in ["close", "stop", "target(2R)", "entry_price", "stop_by_entry", "target_by_entry(2R)"]:
     if c in df_view.columns:
         df_view[c] = df_view.apply(
             lambda r: format_currency_for_display(r.get("market", ""), r.get(c, None)),
@@ -627,9 +734,9 @@ if n_cand == 0:
 else:
     st.success(f"후보(O) {n_cand}개")
 
-# ----------------------------
-# 근거 (조건표 + 차트 + 수평선)
-# ----------------------------
+# -------------------------
+# Evidence (table + charts)
+# -------------------------
 st.markdown("---")
 st.subheader("근거(조건표 + 차트)")
 
@@ -654,12 +761,15 @@ for _, row in df_out.iterrows():
         st.write("매수 조건 근거(통과 여부)")
         st.dataframe(reason_df, use_container_width=True)
 
-        entry_price = pos_map.get(tkr, {}).get("entry_price", np.nan)
-        entry_date = pos_map.get(tkr, {}).get("entry_date", "")
+        entry_price = row.get("entry_price", np.nan)
+        entry_date = ""
+        key = (tkr, str(mkt))
+        if key in pos_map:
+            entry_date = pos_map[key].get("entry_date", "")
 
         if entry_price is not None and not (isinstance(entry_price, float) and np.isnan(entry_price)) and entry_price > 0:
             last = df_ind.iloc[-1]
-            _sig, _rsn, stop_e, target_e, _hd = sell_recommendation(last, params, float(entry_price), entry_date)
+            _, _, stop_e, target_e, _ = sell_recommendation(last, params, float(entry_price), entry_date)
         else:
             stop_e, target_e = None, None
 
@@ -677,13 +787,13 @@ for _, row in df_out.iterrows():
             f"- sell_reason: {row.get('sell_reason','')}"
         )
 
-# ----------------------------
-# 엑셀 다운로드
-# ----------------------------
+# -------------------------
+# Excel download
+# -------------------------
 st.markdown("---")
 st.subheader("엑셀 다운로드")
 
-xlsx_bytes = build_excel_bytes(df_out)
+xlsx_bytes = build_excel_bytes_with_formats(df_out)
 st.download_button(
     label="엑셀 다운로드 (KR ₩ / US $ 자동 적용)",
     data=xlsx_bytes,
