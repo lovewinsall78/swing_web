@@ -7,9 +7,10 @@ from pykrx import stock as krx
 import streamlit as st
 from datetime import datetime, timedelta
 
-# ---------------- Defaults ----------------
+# =========================
+# Defaults
+# =========================
 DEFAULTS = dict(
-    HOLD_DAYS=20,
     MA_FAST=20,
     MA_SLOW=60,
     ATR_PERIOD=14,
@@ -20,29 +21,30 @@ DEFAULTS = dict(
     ACCOUNT_SIZE=10_000_000,
     RISK_PER_TRADE=0.01,
     STOP_ATR_MULT=1.8,
-    TOP_N=10
+    HOLD_DAYS=20,
+    LOOKBACK_YEARS=2,
 )
 
-# ---------------- Helpers ----------------
+# =========================
+# Utils
+# =========================
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", x.strip()))
 
 def normalize_tickers(raw: str):
     items = re.split(r"[,\n\s]+", raw.strip())
-    items = [x.strip().upper() for x in items if x.strip()]
-    return items
+    return [x.strip().upper() for x in items if x.strip()]
 
-def compute_atr(df, period=14):
+def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     high, low, close = df["High"], df["Low"], df["Close"]
     prev_close = close.shift(1)
-    tr = pd.concat([
-        (high - low),
-        (high - prev_close).abs(),
-        (low - prev_close).abs()
-    ], axis=1).max(axis=1)
+    tr = pd.concat(
+        [(high - low), (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1
+    ).max(axis=1)
     return tr.rolling(period).mean()
 
-def add_indicators(df, MA_FAST, MA_SLOW, VOL_LOOKBACK, ATR_PERIOD):
+def add_indicators(df: pd.DataFrame, MA_FAST: int, MA_SLOW: int, VOL_LOOKBACK: int, ATR_PERIOD: int) -> pd.DataFrame:
     df = df.copy()
     df["MA_FAST"] = df["Close"].rolling(MA_FAST).mean()
     df["MA_SLOW"] = df["Close"].rolling(MA_SLOW).mean()
@@ -53,19 +55,18 @@ def add_indicators(df, MA_FAST, MA_SLOW, VOL_LOOKBACK, ATR_PERIOD):
     df["RET_20"] = df["Close"].pct_change(20)
     return df
 
-def rule_signal(last, VOL_SPIKE, ATR_PCT_MIN, ATR_PCT_MAX):
-    needed = ["MA_FAST", "MA_SLOW", "VOL_RATIO", "ATR_PCT"]
+def rule_signal(last: pd.Series, params: dict) -> int:
+    needed = ["MA_FAST", "MA_SLOW", "VOL_RATIO", "ATR_PCT", "Close"]
     if any(pd.isna(last.get(k, np.nan)) for k in needed):
         return 0
-
     trend_ok = (last["MA_FAST"] > last["MA_SLOW"]) and (last["Close"] > last["MA_FAST"])
-    vol_ok   = (last["VOL_RATIO"] >= VOL_SPIKE)
-    atr_ok   = (ATR_PCT_MIN <= last["ATR_PCT"] <= ATR_PCT_MAX)
-    return 1 if (trend_ok and vol_ok and atr_ok) else 0
+    vol_ok = (last["VOL_RATIO"] >= float(params["VOL_SPIKE"]))
+    atr_ok = (float(params["ATR_PCT_MIN"]) <= last["ATR_PCT"] <= float(params["ATR_PCT_MAX"]))
+    return int(trend_ok and vol_ok and atr_ok)
 
-def score_row(last):
+def score_row(last: pd.Series) -> int:
     score = 0
-    if last["MA_FAST"] > last["MA_SLOW"]:
+    if last.get("MA_FAST", np.nan) > last.get("MA_SLOW", np.nan):
         score += 40
 
     vr = last.get("VOL_RATIO", np.nan)
@@ -87,16 +88,15 @@ def score_row(last):
 
     return int(score)
 
-def position_size(entry, atr, ACCOUNT_SIZE, RISK_PER_TRADE, STOP_ATR_MULT):
+def position_size(entry: float, atr: float, ACCOUNT_SIZE: float, RISK_PER_TRADE: float, STOP_ATR_MULT: float):
     if pd.isna(atr) or atr <= 0:
         return 0, np.nan
     stop_dist = STOP_ATR_MULT * atr
     risk_amount = ACCOUNT_SIZE * RISK_PER_TRADE
-    qty = int(risk_amount / stop_dist)
+    qty = int(risk_amount / stop_dist) if stop_dist > 0 else 0
     stop_price = entry - stop_dist
     return max(0, qty), float(stop_price)
 
-# ---------------- Reason Table (근거표) ----------------
 def build_reason_table(last: pd.Series, params: dict) -> pd.DataFrame:
     def safe(v):
         return None if pd.isna(v) else float(v)
@@ -109,10 +109,8 @@ def build_reason_table(last: pd.Series, params: dict) -> pd.DataFrame:
 
     rows = []
 
-    # 1) 추세 조건 2개
     c1 = (ma_fast is not None) and (ma_slow is not None) and (ma_fast > ma_slow)
     c2 = (close is not None) and (ma_fast is not None) and (close > ma_fast)
-
     rows.append({
         "조건": "추세: MA_FAST > MA_SLOW",
         "현재값": f"{ma_fast:,.2f} > {ma_slow:,.2f}" if (ma_fast is not None and ma_slow is not None) else "데이터 부족",
@@ -126,7 +124,6 @@ def build_reason_table(last: pd.Series, params: dict) -> pd.DataFrame:
         "통과": bool(c2)
     })
 
-    # 2) 거래량 조건
     vol_spike = float(params["VOL_SPIKE"])
     c3 = (vol_ratio is not None) and (vol_ratio >= vol_spike)
     rows.append({
@@ -136,7 +133,6 @@ def build_reason_table(last: pd.Series, params: dict) -> pd.DataFrame:
         "통과": bool(c3)
     })
 
-    # 3) 변동성(ATR%) 조건
     atr_min = float(params["ATR_PCT_MIN"])
     atr_max = float(params["ATR_PCT_MAX"])
     c4 = (atr_pct is not None) and (atr_min <= atr_pct <= atr_max)
@@ -149,11 +145,25 @@ def build_reason_table(last: pd.Series, params: dict) -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
-# ---------------- Data Loaders ----------------
-def load_us(ticker: str):
+def format_currency_for_display(market: str, v):
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return ""
+    try:
+        if market == "KR":
+            return f"₩{float(v):,.0f}"
+        if market == "US":
+            return f"${float(v):,.2f}"
+        return str(v)
+    except Exception:
+        return str(v)
+
+# =========================
+# Data loaders
+# =========================
+def load_us(ticker: str) -> pd.DataFrame:
     df = yf.download(
         ticker,
-        period="2y",
+        period=f"{DEFAULTS['LOOKBACK_YEARS']}y",
         interval="1d",
         auto_adjust=False,
         progress=False,
@@ -161,21 +171,22 @@ def load_us(ticker: str):
         threads=False,
     )
 
-    # MultiIndex 처리 (yfinance가 가끔 (필드,티커)로 반환)
+    # yfinance가 MultiIndex로 오는 케이스 방어
     if isinstance(df.columns, pd.MultiIndex):
         lv0 = df.columns.get_level_values(0)
         lv1 = df.columns.get_level_values(1)
 
-        if ticker in lv0:          # (티커, 필드)
+        if ticker in lv0:          # (ticker, field)
             df = df[ticker]
-        elif ticker in lv1:        # (필드, 티커)
+        elif ticker in lv1:        # (field, ticker)
             df = df.xs(ticker, axis=1, level=1)
         else:
+            # 최후수단: 첫 블록 선택(중복 컬럼 방지 위해 ticker 축을 하나 선택)
             uniq0 = list(pd.unique(lv0))
             uniq1 = list(pd.unique(lv1))
-            if len(uniq0) > 1 and len(uniq1) <= 10:
+            if len(uniq1) >= 1:
                 df = df.xs(uniq1[0], axis=1, level=1)
-            elif len(uniq1) > 1 and len(uniq0) <= 10:
+            elif len(uniq0) >= 1:
                 df = df[uniq0[0]]
             else:
                 raise ValueError(f"Unexpected MultiIndex columns: {df.columns}")
@@ -190,25 +201,79 @@ def load_us(ticker: str):
     if missing:
         raise ValueError(f"US data missing columns: {missing} / columns={list(df.columns)}")
 
-    df = df[keep].dropna()
-    return df
+    return df[keep].dropna()
 
-def load_kr(code: str):
+def load_kr(code: str) -> pd.DataFrame:
     end = datetime.now().strftime("%Y-%m-%d")
-    start = (datetime.now() - timedelta(days=365*2)).strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=365 * DEFAULTS["LOOKBACK_YEARS"])).strftime("%Y-%m-%d")
     df = krx.get_market_ohlcv_by_date(start, end, code)
     df = df.rename(columns={"시가":"Open","고가":"High","저가":"Low","종가":"Close","거래량":"Volume"})
-    df = df[["Open","High","Low","Close","Volume"]].dropna()
-    return df
+    return df[["Open","High","Low","Close","Volume"]].dropna()
 
-# ---------------- Analysis (returns summary + df_ind) ----------------
+# =========================
+# Sell recommendation
+# =========================
+def sell_recommendation(last: pd.Series, params: dict, entry_price: float, entry_date: str):
+    """
+    entry_price: 보유 평단(진입가)
+    entry_date:  'YYYY-MM-DD' 형식 (없어도 됨)
+    반환: (sell_signal, sell_reason, stop_price, target_price, holding_days)
+    """
+    if entry_price is None or (isinstance(entry_price, float) and np.isnan(entry_price)) or entry_price <= 0:
+        return "N/A", "평단(진입가) 입력 필요", None, None, None
+
+    # 보유일수 계산(입력 시)
+    holding_days = None
+    if isinstance(entry_date, str) and entry_date.strip():
+        try:
+            d0 = datetime.strptime(entry_date.strip(), "%Y-%m-%d").date()
+            holding_days = (datetime.now().date() - d0).days
+        except Exception:
+            holding_days = None
+
+    close = float(last.get("Close", np.nan))
+    atr = float(last.get("ATR", np.nan))
+    ma_fast = float(last.get("MA_FAST", np.nan))
+    ma_slow = float(last.get("MA_SLOW", np.nan))
+
+    if pd.isna(close):
+        return "N/A", "종가 데이터 부족", None, None, holding_days
+
+    # ATR 없으면 stop/target 계산 불가
+    if pd.isna(atr) or atr <= 0:
+        stop_price = None
+        target_price = None
+    else:
+        stop_price = float(entry_price - float(params["STOP_ATR_MULT"]) * atr)
+        target_price = float(entry_price + 2 * (entry_price - stop_price))  # 2R
+
+    # 1) 손절
+    if stop_price is not None and close < stop_price:
+        return "SELL", "손절가 이탈(ATR 기준)", stop_price, target_price, holding_days
+
+    # 2) 목표가
+    if target_price is not None and close >= target_price:
+        return "PARTIAL SELL", "목표가(2R) 도달", stop_price, target_price, holding_days
+
+    # 3) 추세 이탈(비중축소)
+    trend_exit = False
+    if pd.notna(ma_fast) and close < ma_fast:
+        trend_exit = True
+    if pd.notna(ma_fast) and pd.notna(ma_slow) and ma_fast < ma_slow:
+        trend_exit = True
+    if trend_exit:
+        return "PARTIAL SELL", "추세 이탈(이평선 기준)", stop_price, target_price, holding_days
+
+    # 4) 보유기간 초과
+    if holding_days is not None and holding_days >= int(params["HOLD_DAYS"]):
+        return "SELL", "보유 기간 초과(HOLD_DAYS)", stop_price, target_price, holding_days
+
+    return "HOLD", "추세 유지", stop_price, target_price, holding_days
+
+# =========================
+# Analyzer (keeps df_ind for evidence charts)
+# =========================
 def analyze_one_with_df(ticker: str, params: dict):
-    """
-    반환:
-      - result_dict: 요약 행(표에 들어갈 값들)
-      - df_ind: 지표 포함된 데이터프레임(근거표/차트에 사용)
-      - reason_df: 근거표
-    """
     try:
         if is_kr_code(ticker):
             market = "KR"
@@ -219,33 +284,27 @@ def analyze_one_with_df(ticker: str, params: dict):
 
         df_ind = add_indicators(
             df,
-            MA_FAST=params["MA_FAST"],
-            MA_SLOW=params["MA_SLOW"],
-            VOL_LOOKBACK=params["VOL_LOOKBACK"],
-            ATR_PERIOD=params["ATR_PERIOD"],
+            MA_FAST=int(params["MA_FAST"]),
+            MA_SLOW=int(params["MA_SLOW"]),
+            VOL_LOOKBACK=int(params["VOL_LOOKBACK"]),
+            ATR_PERIOD=int(params["ATR_PERIOD"]),
         )
 
         last = df_ind.iloc[-1]
 
-        cand = rule_signal(
-            last,
-            VOL_SPIKE=params["VOL_SPIKE"],
-            ATR_PCT_MIN=params["ATR_PCT_MIN"],
-            ATR_PCT_MAX=params["ATR_PCT_MAX"],
-        )
-
+        cand = rule_signal(last, params)
         sc = score_row(last) if cand == 1 else 0
 
         entry = float(last["Close"])
-        qty, stop = position_size(
-            entry, float(last["ATR"]),
-            ACCOUNT_SIZE=params["ACCOUNT_SIZE"],
-            RISK_PER_TRADE=params["RISK_PER_TRADE"],
-            STOP_ATR_MULT=params["STOP_ATR_MULT"],
+        qty, stop_buy = position_size(
+            entry=entry,
+            atr=float(last.get("ATR", np.nan)),
+            ACCOUNT_SIZE=float(params["ACCOUNT_SIZE"]),
+            RISK_PER_TRADE=float(params["RISK_PER_TRADE"]),
+            STOP_ATR_MULT=float(params["STOP_ATR_MULT"]),
         )
 
-        target = entry + 2 * (entry - stop) if (not np.isnan(stop)) else np.nan
-
+        target_buy = entry + 2 * (entry - stop_buy) if (not np.isnan(stop_buy)) else np.nan
         reason_df = build_reason_table(last, params)
 
         result = {
@@ -255,12 +314,12 @@ def analyze_one_with_df(ticker: str, params: dict):
             "candidate": int(cand),
             "score": int(sc),
             "close": float(entry),
-            "stop": (None if np.isnan(stop) else float(stop)),
-            "target(2R)": (None if np.isnan(target) else float(target)),
+            "stop": (np.nan if np.isnan(stop_buy) else float(stop_buy)),
+            "target(2R)": (np.nan if np.isnan(target_buy) else float(target_buy)),
             "qty": int(qty),
-            "vol_ratio": (None if pd.isna(last["VOL_RATIO"]) else float(last["VOL_RATIO"])),
-            "atr_pct(%)": (None if pd.isna(last["ATR_PCT"]) else float(last["ATR_PCT"]) * 100),
-            "ret_20(%)": (None if pd.isna(last["RET_20"]) else float(last["RET_20"]) * 100),
+            "vol_ratio": (np.nan if pd.isna(last.get("VOL_RATIO", np.nan)) else float(last["VOL_RATIO"])),
+            "atr_pct(%)": (np.nan if pd.isna(last.get("ATR_PCT", np.nan)) else float(last["ATR_PCT"]) * 100),
+            "ret_20(%)": (np.nan if pd.isna(last.get("RET_20", np.nan)) else float(last["RET_20"]) * 100),
             "date": str(df_ind.index[-1].date()),
             "error": ""
         }
@@ -273,24 +332,34 @@ def analyze_one_with_df(ticker: str, params: dict):
             "O/X": "X",
             "candidate": 0,
             "score": 0,
-            "close": None,
-            "stop": None,
-            "target(2R)": None,
+            "close": np.nan,
+            "stop": np.nan,
+            "target(2R)": np.nan,
             "qty": 0,
-            "vol_ratio": None,
-            "atr_pct(%)": None,
-            "ret_20(%)": None,
+            "vol_ratio": np.nan,
+            "atr_pct(%)": np.nan,
+            "ret_20(%)": np.nan,
             "date": "",
             "error": str(e)
         }
         return result, None, None
 
-# ---------------- Excel formatting (KRW/USD) ----------------
+# =========================
+# Excel export (KRW/USD formats)
+# =========================
 def apply_currency_formats_openpyxl(ws):
+    """
+    market 기준:
+      KR -> ₩#,##0
+      US -> $#,##0.00
+    적용 컬럼:
+      close, stop, target(2R), stop_by_entry, target_by_entry(2R)
+    """
     fmt_krw = u'₩#,##0'
     fmt_usd = u'$#,##0.00'
-    price_cols = {"close", "stop", "target(2R)"}
+    price_cols = {"close", "stop", "target(2R)", "stop_by_entry", "target_by_entry(2R)"}
 
+    # header map
     header = {}
     for col in range(1, ws.max_column + 1):
         v = ws.cell(row=1, column=col).value
@@ -301,8 +370,8 @@ def apply_currency_formats_openpyxl(ws):
         return
 
     market_col = header["market"]
-    price_col_idxs = [header[c] for c in price_cols if c in header]
-    if not price_col_idxs:
+    price_idxs = [header[c] for c in price_cols if c in header]
+    if not price_idxs:
         return
 
     for r in range(2, ws.max_row + 1):
@@ -314,7 +383,7 @@ def apply_currency_formats_openpyxl(ws):
         else:
             continue
 
-        for c in price_col_idxs:
+        for c in price_idxs:
             cell = ws.cell(row=r, column=c)
             if isinstance(cell.value, (int, float)) and cell.value is not None:
                 cell.number_format = numfmt
@@ -329,59 +398,27 @@ def build_excel(df_all: pd.DataFrame) -> bytes:
             df_cand = pd.DataFrame([{"note": "nottoday"}])
         df_cand.to_excel(writer, sheet_name="Candidates", index=False)
 
-        def order_sheet(df, market):
-            d = df[(df["market"] == market) & (df["candidate"] == 1)].copy()
-            if d.empty:
-                return pd.DataFrame([{
-                    "market": market, "ticker": "nottoday", "action": "NONE",
-                    "qty": 0, "stop": "", "target(2R)": "", "note": "No candidates"
-                }])
-            d = d.sort_values("score", ascending=False).head(10)
-            d["qty_safe"] = (d["qty"] * 0.5).astype(int)
-            return pd.DataFrame({
-                "market": d["market"],
-                "ticker": d["ticker"],
-                "action": "BUY",
-                "qty": d["qty_safe"],
-                "stop": d["stop"],
-                "target(2R)": d["target(2R)"],
-                "note": ["Manual entry (M-STOCK)"] * len(d)
-            })
-
-        order_sheet(df_all, "KR").to_excel(writer, sheet_name="Order_KR", index=False)
-        order_sheet(df_all, "US").to_excel(writer, sheet_name="Order_US", index=False)
-
         wb = writer.book
-        for name in ["Signals_All", "Candidates", "Order_KR", "Order_US"]:
+        for name in ["Signals_All", "Candidates"]:
             if name in wb.sheetnames:
                 apply_currency_formats_openpyxl(wb[name])
 
     return output.getvalue()
 
-# ---------------- Display helpers ----------------
-def format_currency_for_display(market: str, v):
-    if v is None or (isinstance(v, float) and np.isnan(v)):
-        return ""
-    try:
-        if market == "KR":
-            return f"₩{float(v):,.0f}"
-        if market == "US":
-            return f"${float(v):,.2f}"
-        return str(v)
-    except Exception:
-        return str(v)
-
+# =========================
+# Streamlit UI
+# =========================
 st.set_page_config(page_title="Swing Scanner", layout="wide")
 
+# ✅ 폰트 크기(방법 1)
 st.markdown(
     """
-    <h1 style="font-size:27px;font-weight:700;">
-        웹 티커 입력 → 스윙 판단(O/X) + 근거(표+차트) + 엑셀다운로드
+    <h1 style="font-size:36px;font-weight:700;margin-bottom:10px;">
+        웹 티커 입력 → 스윙 판단(O/X) + 근거(표+차트) + 매도 추천 + 엑셀
     </h1>
     """,
     unsafe_allow_html=True
 )
-
 
 with st.sidebar:
     st.header("스윙 전략 설정 (초보자 권장값)")
@@ -389,38 +426,22 @@ with st.sidebar:
 
     st.markdown("### 추세 지표 (이동평균)")
     params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
-    st.write("단기 이동평균 기간(기본 20). 작을수록 신호 빠름/노이즈 증가")
-
     params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
-    st.write("장기 이동평균 기간(기본 60). 단기선이 장기선 위면 상승 추세로 판단")
 
     st.markdown("---")
     st.markdown("### 거래량 / 변동성 조건")
     params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
-    st.write("거래량 평균을 계산하는 기간(기본 20)")
-
     params["VOL_SPIKE"] = st.number_input("VOL_SPIKE (거래량 급증 기준)", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05)
-    st.write("현재 거래량/평균 거래량 비율 기준(예: 1.5 = 평균의 150%)")
-
     params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"])
-    st.write("ATR(평균 변동폭) 계산 기간(기본 14)")
-
     params["ATR_PCT_MIN"] = st.number_input("ATR_PCT_MIN (최소 변동성)", 0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]), step=0.001, format="%.3f")
-    st.write("너무 안 움직이는 종목 제외")
-
     params["ATR_PCT_MAX"] = st.number_input("ATR_PCT_MAX (최대 변동성)", 0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]), step=0.001, format="%.3f")
-    st.write("변동성이 너무 큰 종목 제외")
 
     st.markdown("---")
-    st.markdown("### 자금 관리")
+    st.markdown("### 자금 관리 / 매도 설정")
     params["ACCOUNT_SIZE"] = st.number_input("ACCOUNT_SIZE (총 투자금)", 100_000, 1_000_000_000, DEFAULTS["ACCOUNT_SIZE"], step=100_000)
-    st.write("포지션 크기 계산용 가상 계좌 금액")
-
     params["RISK_PER_TRADE"] = st.number_input("RISK_PER_TRADE (1회 최대 손실 비율)", 0.001, 0.05, float(DEFAULTS["RISK_PER_TRADE"]), step=0.001, format="%.3f")
-    st.write("예: 0.01 = 1% 손실까지만 허용")
-
     params["STOP_ATR_MULT"] = st.number_input("STOP_ATR_MULT (손절 ATR 배수)", 0.5, 5.0, float(DEFAULTS["STOP_ATR_MULT"]), step=0.1)
-    st.write("손절폭 = ATR × 배수 (기본 1.8)")
+    params["HOLD_DAYS"] = st.number_input("HOLD_DAYS (최대 보유일)", 1, 200, DEFAULTS["HOLD_DAYS"])
 
 st.write("**입력 방법**: KR은 6자리 코드(예: `005930`), US는 티커(예: `SPY`). 콤마/줄바꿈/공백 모두 가능.")
 raw = st.text_area("티커 입력", value="005930 000660\nSPY QQQ", height=120)
@@ -444,13 +465,79 @@ if run:
     df = pd.DataFrame(results)
     df = df.sort_values(["candidate", "score"], ascending=[False, False]).reset_index(drop=True)
 
-    st.subheader("결과")
+    # ---- 보유 입력(매도 추천용) ----
+    st.markdown("---")
+    st.subheader("보유 종목 입력 (매도 추천용)")
 
-    # 화면 표시용(통화 포맷만 문자열로)
+    pos_base = pd.DataFrame({
+        "ticker": df["ticker"].tolist(),
+        "entry_price": [np.nan] * len(df),
+        "entry_date": [""] * len(df)  # YYYY-MM-DD
+    })
+
+    positions = st.data_editor(
+        pos_base,
+        use_container_width=True,
+        num_rows="fixed",
+        column_config={
+            "ticker": st.column_config.TextColumn("ticker", disabled=True),
+            "entry_price": st.column_config.NumberColumn("평단(진입가)", format="%.4f"),
+            "entry_date": st.column_config.TextColumn("보유 시작일(YYYY-MM-DD)")
+        }
+    )
+
+    pos_map = {}
+    for _, r in positions.iterrows():
+        pos_map[str(r["ticker"]).upper()] = {
+            "entry_price": r["entry_price"],
+            "entry_date": r["entry_date"]
+        }
+
+    # ---- 매도 추천 계산 ----
+    sell_signals, sell_reasons = [], []
+    stop_by_entry_list, target_by_entry_list, hold_days_list = [], [], []
+
+    for _, row in df.iterrows():
+        tkr = str(row["ticker"]).upper()
+        if tkr not in detail_map:
+            sell_signals.append("N/A")
+            sell_reasons.append("데이터 없음")
+            stop_by_entry_list.append(np.nan)
+            target_by_entry_list.append(np.nan)
+            hold_days_list.append(np.nan)
+            continue
+
+        df_ind, _reason_df = detail_map[tkr]
+        last = df_ind.iloc[-1]
+
+        entry_price = pos_map.get(tkr, {}).get("entry_price", np.nan)
+        entry_date = pos_map.get(tkr, {}).get("entry_date", "")
+
+        sig, reason, stp, tgt, hd = sell_recommendation(last, params, entry_price, entry_date)
+
+        sell_signals.append(sig)
+        sell_reasons.append(reason)
+        stop_by_entry_list.append(np.nan if stp is None else float(stp))
+        target_by_entry_list.append(np.nan if tgt is None else float(tgt))
+        hold_days_list.append(np.nan if hd is None else int(hd))
+
+    df["sell_signal"] = sell_signals
+    df["sell_reason"] = sell_reasons
+    df["hold_days"] = hold_days_list
+    df["stop_by_entry"] = stop_by_entry_list
+    df["target_by_entry(2R)"] = target_by_entry_list
+
+    # ---- 화면 결과표(통화 문자열 표시) ----
+    st.markdown("---")
+    st.subheader("결과 (매수/매도 추천 포함)")
+
     df_view = df.copy()
-    for c in ["close", "stop", "target(2R)"]:
+    for c in ["close", "stop", "target(2R)", "stop_by_entry", "target_by_entry(2R)"]:
         if c in df_view.columns:
-            df_view[c] = df_view.apply(lambda r: format_currency_for_display(r.get("market", ""), r.get(c, None)), axis=1)
+            df_view[c] = df_view.apply(
+                lambda r: format_currency_for_display(r.get("market", ""), r.get(c, None)),
+                axis=1
+            )
 
     st.dataframe(df_view, use_container_width=True)
 
@@ -460,59 +547,62 @@ if run:
     else:
         st.success(f"후보(O) {n_cand}개")
 
+    # ---- 근거(표 + 차트) ----
     st.markdown("---")
     st.subheader("근거(조건표 + 차트)")
 
-    # 각 티커별 근거 표시
     for _, row in df.iterrows():
         tkr = row["ticker"]
         mkt = row["market"]
         ox = row["O/X"]
+        sig = row.get("sell_signal", "")
         err = row.get("error", "")
 
-        title = f"{tkr} ({mkt}) - {ox}"
+        title = f"{tkr} ({mkt}) | 매수:{ox} | 매도:{sig}"
         with st.expander(title, expanded=False):
             if err:
                 st.error(f"데이터 오류: {err}")
                 continue
 
             if tkr not in detail_map:
-                st.warning("근거 데이터를 만들지 못했습니다.")
+                st.warning("근거 데이터 없음")
                 continue
 
             df_ind, reason_df = detail_map[tkr]
 
-            # 1) 근거표
             st.write("조건별 통과/실패 근거")
             st.dataframe(reason_df, use_container_width=True)
 
-            # 2) 차트(종가 + MA)
             st.write("종가 + 이동평균")
             chart_df1 = df_ind[["Close", "MA_FAST", "MA_SLOW"]].dropna()
             st.line_chart(chart_df1)
 
-            # 3) 차트(거래량 + 평균)
             st.write("거래량 + 평균 거래량")
             chart_df2 = df_ind[["Volume", "VOL_AVG"]].dropna()
             st.line_chart(chart_df2)
 
-            # 4) 핵심 수치 요약(가독성)
-            close = row.get("close", None)
-            stop = row.get("stop", None)
-            target = row.get("target(2R)", None)
+            # 매도/보유 정보 요약
+            close = row.get("close", np.nan)
+            stop_buy = row.get("stop", np.nan)
+            tgt_buy = row.get("target(2R)", np.nan)
+            entry_stop = row.get("stop_by_entry", np.nan)
+            entry_tgt = row.get("target_by_entry(2R)", np.nan)
 
             st.write(
                 f"- close: {format_currency_for_display(mkt, close)}\n"
-                f"- stop: {format_currency_for_display(mkt, stop)}\n"
-                f"- target(2R): {format_currency_for_display(mkt, target)}\n"
-                f"- qty: {int(row.get('qty', 0)):,}"
+                f"- (매수기준) stop: {format_currency_for_display(mkt, stop_buy)} / target(2R): {format_currency_for_display(mkt, tgt_buy)}\n"
+                f"- (평단기준) stop: {format_currency_for_display(mkt, entry_stop)} / target(2R): {format_currency_for_display(mkt, entry_tgt)}\n"
+                f"- sell_reason: {row.get('sell_reason','')}"
             )
 
-    # 엑셀 다운로드
-    xlsx_bytes = build_excel(df)  # 숫자 원본 df로 생성(서식 적용됨)
+    # ---- Excel download (KRW/USD formats) ----
+    st.markdown("---")
+    st.subheader("엑셀 다운로드")
+
+    xlsx_bytes = build_excel(df)
     st.download_button(
-        label="엑셀 1개로 다운로드 (All-in-One)",
+        label="엑셀 다운로드 (KR ₩ / US $ 자동 적용)",
         data=xlsx_bytes,
-        file_name="Swing_Output_AllInOne.xlsx",
+        file_name="Swing_Scanner_Output.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
