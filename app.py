@@ -110,10 +110,52 @@ def build_reason_table(last, params):
 # =========================
 # 데이터 로드
 # =========================
-def load_us(ticker):
-    df = yf.download(ticker, period=f"{DEFAULTS['LOOKBACK_YEARS']}y", progress=False)
-    df.columns = [c.title() for c in df.columns]
-    return df[["Open","High","Low","Close","Volume"]].dropna()
+def load_us(ticker: str) -> pd.DataFrame:
+    df = yf.download(
+        ticker,
+        period=f"{DEFAULTS['LOOKBACK_YEARS']}y",
+        interval="1d",
+        auto_adjust=False,
+        progress=False,
+        group_by="column",
+        threads=False,
+    )
+
+    # ✅ MultiIndex 방어 (미국주식에서 필수)
+    if isinstance(df.columns, pd.MultiIndex):
+        lv0 = df.columns.get_level_values(0)
+        lv1 = df.columns.get_level_values(1)
+
+        # (ticker, field) 구조
+        if ticker in lv0:
+            df = df[ticker]
+
+        # (field, ticker) 구조
+        elif ticker in lv1:
+            df = df.xs(ticker, axis=1, level=1)
+
+        else:
+            # 최후의 안전장치: 첫 ticker 블록 선택
+            uniq1 = list(pd.unique(lv1))
+            if uniq1:
+                df = df.xs(uniq1[0], axis=1, level=1)
+            else:
+                raise ValueError(f"Unexpected MultiIndex columns: {df.columns}")
+
+    # 컬럼명 정규화
+    df = df.rename(columns=lambda c: str(c).title())
+
+    # Close 없고 Adj Close만 있는 경우
+    if "Close" not in df.columns and "Adj Close" in df.columns:
+        df["Close"] = df["Adj Close"]
+
+    keep = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [c for c in keep if c not in df.columns]
+    if missing:
+        raise ValueError(f"US data missing columns: {missing} / columns={list(df.columns)}")
+
+    return df[keep].dropna()
+
 
 def load_kr(code):
     end = datetime.now().strftime("%Y-%m-%d")
