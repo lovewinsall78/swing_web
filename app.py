@@ -375,8 +375,8 @@ st.set_page_config(page_title="Swing Scanner", layout="wide")
 
 st.markdown(
     """
-    <h1 style="font-size:36px;font-weight:700;">
-        웹 티커 입력 → 스윙 판단(O/X) + 근거(표+차트) + 주문표 엑셀
+    <h1 style="font-size:27px;font-weight:700;">
+        웹 티커 입력 → 스윙 판단(O/X) + 근거(표+차트) + 엑셀다운로드
     </h1>
     """,
     unsafe_allow_html=True
