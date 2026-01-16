@@ -593,26 +593,48 @@ st.write(
 )
 
 # 화면에 보여줄 때마다 entry_price는 entry_text 기준으로 재계산(텍스트는 건드리지 않음)
-pos_for_view = compute_entry_price_column(st.session_state["positions_df"])
+st.markdown("---")
+st.subheader("보유 입력 (KR/US 통화 입력 지원)")
 
-edited_positions = st.data_editor(
-    pos_for_view,
-    key="positions_editor_widget",   # ✅ 위젯 key는 이걸로 고정 (세션 대입 금지)
+st.write(
+    "- KR 예시: `₩10,000,000` 또는 `10,000,000` 또는 `10000000`\n"
+    "- US 예시: `$123.45` 또는 `123.45` 또는 `1,234.56`\n"
+    "입력은 `entry_text`에 하고, 계산용 평단(`entry_price`)은 아래에서 자동 계산됩니다."
+)
+
+# ✅ 1) 편집용 DF(계산 컬럼 제외) 만들기
+pos_input = st.session_state["positions_df"][["ticker", "market", "entry_text", "entry_date"]].copy()
+
+# ✅ 2) data_editor에는 '편집용 DF'만 넣기 (entry_price 컬럼 넣지 않음!)
+edited_input = st.data_editor(
+    pos_input,
+    key="positions_editor_widget",
     use_container_width=True,
     num_rows="fixed",
     column_config={
         "ticker": st.column_config.TextColumn("ticker", disabled=True),
         "market": st.column_config.TextColumn("market", disabled=True),
         "entry_text": st.column_config.TextColumn("평단 입력 (KR: ₩10,000,000 / US: $123.45)"),
-        "entry_price": st.column_config.NumberColumn("평단(계산용 자동)", disabled=True, format="%.2f"),
         "entry_date": st.column_config.TextColumn("보유 시작일(YYYY-MM-DD)"),
     },
 )
 
-# ✅ 반환값을 positions_df에 저장 (위젯 key와 다른 키라서 안전)
-st.session_state["positions_df"] = compute_entry_price_column(edited_positions)
+# ✅ 3) 계산용 entry_price는 editor "밖에서" 계산
+edited_calc = edited_input.copy()
+edited_calc["entry_price"] = [
+    parse_entry_text(str(m), str(t))
+    for m, t in zip(edited_calc["market"], edited_calc["entry_text"])
+]
 
-# ticker+market -> 보유정보 매핑
+# ✅ 4) positions_df에는 계산 결과까지 합쳐 저장
+st.session_state["positions_df"] = edited_calc[["ticker", "market", "entry_text", "entry_price", "entry_date"]].copy()
+
+# ✅ 5) 계산된 평단(읽기 전용) 확인용 테이블(리셋/튐 없이 안전)
+st.caption("계산된 평단(자동, 읽기 전용)")
+show_calc = st.session_state["positions_df"][["ticker", "market", "entry_text", "entry_price"]].copy()
+st.dataframe(show_calc, use_container_width=True)
+
+# ✅ 6) downstream용 pos_map 생성
 pos_map = {}
 for _, r in st.session_state["positions_df"].iterrows():
     pos_map[(str(r["ticker"]).upper(), str(r["market"]))] = {
@@ -620,6 +642,7 @@ for _, r in st.session_state["positions_df"].iterrows():
         "entry_price": r.get("entry_price", np.nan),
         "entry_date": r.get("entry_date", ""),
     }
+
 
 # =========================
 # 매도추천 컬럼 추가
