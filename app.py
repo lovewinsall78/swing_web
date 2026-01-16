@@ -27,6 +27,9 @@ DEFAULTS = dict(
     TOP_N=10,
 )
 
+# -----------------------------
+# Candidate Universe
+# -----------------------------
 KR_UNIVERSE = [
     "005930","000660","035420","035720","051910","068270","207940","005380","000270","012330",
     "028260","066570","096770","003550","034020","015760","017670","018260","055550","033780",
@@ -39,13 +42,12 @@ US_UNIVERSE = [
 ]
 
 # -----------------------------
-# CSS: DataFrame wrap (회사명 가독성)
+# Page + CSS (회사명/긴 텍스트 줄바꿈)
 # -----------------------------
 st.set_page_config(page_title="Swing Scanner", layout="wide")
 st.markdown(
     """
     <style>
-    /* 데이터프레임 셀 줄바꿈(회사명 길어도 보이게) */
     div[data-testid="stDataFrame"] .ag-cell {
         white-space: normal !important;
         line-height: 1.25 !important;
@@ -87,7 +89,7 @@ def parse_entry_text(market: str, s: str):
         val = float(raw)
 
         # market이 이상하면 통화기호로 추정
-        if m not in ("KR","US"):
+        if m not in ("KR", "US"):
             if "₩" in t:
                 m = "KR"
             elif "$" in t:
@@ -117,7 +119,7 @@ def format_currency(mkt: str, v):
         return str(v)
 
 # -----------------------------
-# Company Names
+# Company Names (cache)
 # -----------------------------
 @st.cache_data(ttl=60*60*12, show_spinner=False)
 def get_kr_name(code: str) -> str:
@@ -136,10 +138,8 @@ def get_us_name(ticker: str) -> str:
 
 def get_company_name(ticker: str) -> str:
     if is_kr_code(ticker):
-        nm = get_kr_name(ticker)
-        return nm if nm else ""
-    nm = get_us_name(ticker)
-    return nm if nm else ""
+        return get_kr_name(ticker) or ""
+    return get_us_name(ticker) or ""
 
 # -----------------------------
 # Indicators
@@ -253,6 +253,7 @@ def _load_us_cached(ticker: str, years: int) -> pd.DataFrame:
         threads=False,
     )
 
+    # MultiIndex 처리
     if isinstance(df.columns, pd.MultiIndex):
         lv0 = df.columns.get_level_values(0)
         lv1 = df.columns.get_level_values(1)
@@ -374,8 +375,9 @@ def analyze_one_with_detail(ticker: str, p: dict):
             error="",
         )
         return res, df_ind, reason_df
+
     except Exception as e:
-        return dict(
+        res = dict(
             market=("KR" if is_kr_code(ticker) else "US"),
             ticker=ticker,
             name=get_company_name(ticker),
@@ -391,39 +393,54 @@ def analyze_one_with_detail(ticker: str, p: dict):
             ret_20=np.nan,
             date="",
             error=str(e),
-        ), None, None
+        )
+        return res, None, None
 
 # -----------------------------
-# Recommendation (Universe Scan -> Top10)
+# Recommendation (Balanced KR/US)
 # -----------------------------
-def recommend_top10(p: dict, top_n: int = 10):
+def recommend_top10_balanced(p: dict, top_n: int = 10, kr_n: int = 5, us_n: int = 5):
     universe = KR_UNIVERSE + US_UNIVERSE
-    rows = []
+    rows=[]
     prog = st.progress(0)
     total = max(1, len(universe))
 
     for i, t in enumerate(universe, start=1):
         res, _df, _reason = analyze_one_with_detail(t, p)
         rows.append(res)
-        prog.progress(int(i * 100 / total))
+        prog.progress(int(i*100/total))
     prog.empty()
 
     df = pd.DataFrame(rows)
-    cand = df[df["candidate"] == 1].sort_values("score", ascending=False)
+    if df.empty:
+        return [], df
+
+    df["ticker"] = df["ticker"].astype(str).str.upper()
+    df["market"] = df["market"].astype(str).str.strip().str.upper()
+
+    # error 없는 것 우선
+    df_ok = df[df["error"].astype(str) == ""].copy()
+    if df_ok.empty:
+        # 모두 에러면 그냥 점수순이라도 반환
+        df_sorted = df.sort_values(["candidate","score"], ascending=[False, False])
+        picks = df_sorted["ticker"].drop_duplicates().head(top_n).tolist()
+        return picks, df
+
+    df_ok = df_ok.sort_values(["candidate","score"], ascending=[False, False])
+
+    kr = df_ok[df_ok["market"]=="KR"]["ticker"].drop_duplicates().tolist()
+    us = df_ok[df_ok["market"]=="US"]["ticker"].drop_duplicates().tolist()
+
     picks = []
-    for t in cand["ticker"].astype(str).tolist():
+    picks += kr[:kr_n]
+    picks += us[:us_n]
+
+    # 부족하면 전체에서 채움
+    for t in df_ok["ticker"].tolist():
         if t not in picks:
             picks.append(t)
         if len(picks) >= top_n:
             break
-
-    if len(picks) < top_n:
-        all_sorted = df.sort_values(["candidate", "score"], ascending=[False, False])
-        for t in all_sorted["ticker"].astype(str).tolist():
-            if t not in picks:
-                picks.append(t)
-            if len(picks) >= top_n:
-                break
 
     return picks[:top_n], df
 
@@ -443,6 +460,7 @@ def price_chart(df_ind: pd.DataFrame, entry=None, stop=None, target=None):
     close_line = base.mark_line().encode(y=alt.Y("Close:Q", title="Price"))
     ma_fast = base.mark_line(opacity=0.7).encode(y="MA_FAST:Q")
     ma_slow = base.mark_line(opacity=0.7).encode(y="MA_SLOW:Q")
+
     layers = [close_line, ma_fast, ma_slow]
 
     def rule(y):
@@ -488,6 +506,7 @@ def build_excel_bytes_with_formats(df_all: pd.DataFrame) -> bytes:
                 v = ws.cell(row=1, column=col).value
                 if isinstance(v, str):
                     header[v.strip()] = col
+
             if "market" not in header:
                 return
             market_col = header["market"]
@@ -518,7 +537,7 @@ def build_excel_bytes_with_formats(df_all: pd.DataFrame) -> bytes:
 
 # -----------------------------
 # Positions sync (run 버튼에서만!)
-# ✅ merge 키에서 name 제거(평단 덮어쓰기/유실 방지)
+# - merge 키: ticker+market만 사용(평단 유실 방지)
 # -----------------------------
 def sync_positions_on_run(df_analysis: pd.DataFrame):
     base = df_analysis[["ticker", "market", "name"]].copy()
@@ -530,9 +549,7 @@ def sync_positions_on_run(df_analysis: pd.DataFrame):
         ed["ticker"] = ed["ticker"].astype(str).str.upper()
         ed["market"] = ed["market"].astype(str).str.strip().str.upper()
 
-    # ticker+market 기준으로만 병합 -> entry_text/entry_date 유지
     ed = base.merge(ed, on=["ticker", "market"], how="left", suffixes=("", "_old"))
-    # name은 base의 것을 사용
     ed["name"] = ed["name"].fillna("")
     ed["entry_text"] = ed["entry_text"].fillna("")
     ed["entry_date"] = ed["entry_date"].fillna("")
@@ -562,31 +579,31 @@ with st.sidebar:
     params = {}
 
     with st.expander("① 추세 판단 (이동평균)", expanded=True):
-        params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"])
+        params["MA_FAST"] = st.number_input("MA_FAST (단기 이동평균)", 5, 200, DEFAULTS["MA_FAST"], key="MA_FAST")
         st.write("단기 추세. 10~30일 권장(기본 20)")
-        params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"])
+        params["MA_SLOW"] = st.number_input("MA_SLOW (장기 이동평균)", 10, 300, DEFAULTS["MA_SLOW"], key="MA_SLOW")
         st.write("장기 추세. 50~120일 권장(기본 60)")
 
     with st.expander("② 거래량 · 변동성 조건", expanded=False):
-        params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"])
-        params["VOL_SPIKE"] = st.number_input("VOL_SPIKE (거래량 급증 기준)", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05)
-        params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"])
-        params["ATR_PCT_MIN"] = st.number_input("ATR_PCT_MIN (최소 변동성)", 0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]), step=0.001, format="%.3f")
-        params["ATR_PCT_MAX"] = st.number_input("ATR_PCT_MAX (최대 변동성)", 0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]), step=0.001, format="%.3f")
+        params["VOL_LOOKBACK"] = st.number_input("VOL_LOOKBACK (거래량 평균 기간)", 5, 200, DEFAULTS["VOL_LOOKBACK"], key="VOL_LOOKBACK")
+        params["VOL_SPIKE"] = st.number_input("VOL_SPIKE (거래량 급증 기준)", 1.0, 5.0, float(DEFAULTS["VOL_SPIKE"]), step=0.05, key="VOL_SPIKE")
+        params["ATR_PERIOD"] = st.number_input("ATR_PERIOD (ATR 계산 기간)", 5, 100, DEFAULTS["ATR_PERIOD"], key="ATR_PERIOD")
+        params["ATR_PCT_MIN"] = st.number_input("ATR_PCT_MIN (최소 변동성)", 0.0, 0.2, float(DEFAULTS["ATR_PCT_MIN"]), step=0.001, format="%.3f", key="ATR_PCT_MIN")
+        params["ATR_PCT_MAX"] = st.number_input("ATR_PCT_MAX (최대 변동성)", 0.0, 0.5, float(DEFAULTS["ATR_PCT_MAX"]), step=0.001, format="%.3f", key="ATR_PCT_MAX")
 
     with st.expander("③ 리스크 · 손절 · 보유 관리", expanded=False):
-        params["STOP_ATR_MULT"] = st.number_input("STOP_ATR_MULT (손절 ATR 배수)", 0.5, 5.0, float(DEFAULTS["STOP_ATR_MULT"]), step=0.1)
-        params["HOLD_DAYS"] = st.number_input("HOLD_DAYS (최대 보유일)", 1, 200, DEFAULTS["HOLD_DAYS"])
+        params["STOP_ATR_MULT"] = st.number_input("STOP_ATR_MULT (손절 ATR 배수)", 0.5, 5.0, float(DEFAULTS["STOP_ATR_MULT"]), step=0.1, key="STOP_ATR_MULT")
+        params["HOLD_DAYS"] = st.number_input("HOLD_DAYS (최대 보유일)", 1, 200, DEFAULTS["HOLD_DAYS"], key="HOLD_DAYS")
 
     with st.expander("④ 계좌 · 포지션 사이징", expanded=False):
-        acc_str = st.text_input("ACCOUNT_SIZE (총 투자금, 콤마 가능)", value=f"{int(st.session_state['ACCOUNT_SIZE']):,}")
+        acc_str = st.text_input("ACCOUNT_SIZE (총 투자금, 콤마 가능)", value=f"{int(st.session_state['ACCOUNT_SIZE']):,}", key="ACCOUNT_SIZE_TEXT")
         try:
             params["ACCOUNT_SIZE"] = int(str(acc_str).replace(",", "").strip())
             st.session_state["ACCOUNT_SIZE"] = params["ACCOUNT_SIZE"]
         except Exception:
             params["ACCOUNT_SIZE"] = st.session_state["ACCOUNT_SIZE"]
 
-        params["RISK_PER_TRADE"] = st.number_input("RISK_PER_TRADE (1회 최대 손실 비율)", 0.001, 0.05, float(DEFAULTS["RISK_PER_TRADE"]), step=0.001, format="%.3f")
+        params["RISK_PER_TRADE"] = st.number_input("RISK_PER_TRADE (1회 최대 손실 비율)", 0.001, 0.05, float(DEFAULTS["RISK_PER_TRADE"]), step=0.001, format="%.3f", key="RISK_PER_TRADE")
 
     params["LOOKBACK_YEARS"] = DEFAULTS["LOOKBACK_YEARS"]
     params["TOP_N"] = DEFAULTS["TOP_N"]
@@ -599,8 +616,8 @@ st.write("입력: KR은 6자리(예: 005930), US는 티커(예: SPY). 콤마/줄
 c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
 
 with c1:
-    if st.button("스윙전략 기준 TOP10 추천 → 입력칸 채우기"):
-        picks, df_scan = recommend_top10(params, top_n=int(params["TOP_N"]))
+    if st.button("스윙전략 기준 TOP10 추천( KR5 + US5 ) → 입력칸 채우기", key="btn_reco10"):
+        picks, df_scan = recommend_top10_balanced(params, top_n=int(params["TOP_N"]), kr_n=5, us_n=5)
         st.session_state["last_reco_scan_df"] = df_scan
 
         if picks:
@@ -617,14 +634,14 @@ with c1:
             st.warning("추천 실패: 데이터/네트워크/후보풀 점검 필요")
 
 with c2:
-    if st.button("입력칸 비우기"):
+    if st.button("입력칸 비우기", key="btn_clear_input"):
         st.session_state["ticker_input_text"] = ""
 
 with c3:
-    if st.button("추천 스캔 보기 ON/OFF"):
+    if st.button("추천 스캔 보기 ON/OFF", key="btn_toggle_scan"):
         st.session_state["show_scan_table"] = not st.session_state["show_scan_table"]
 
-raw = st.text_area("티커 입력", value=st.session_state["ticker_input_text"], height=120)
+raw = st.text_area("티커 입력", value=st.session_state["ticker_input_text"], height=120, key="ticker_input_area")
 st.session_state["ticker_input_text"] = raw
 
 # ✅ 추천 스캔표: 입력창 바로 아래 + 가로 넓게
@@ -656,8 +673,7 @@ if st.session_state.get("show_scan_table", False):
             }
         )
 
-# 실행
-run = st.button("분석 실행")
+run = st.button("분석 실행", key="run_button")
 
 if run:
     tickers = normalize_tickers(raw)
@@ -687,7 +703,7 @@ if run:
         st.session_state["analysis_df"] = df
         st.session_state["analysis_detail"] = detail_map
 
-        # ✅ 보유입력 동기화(평단 유실 방지 버전)
+        # ✅ 보유입력 동기화(평단 유실 방지)
         sync_positions_on_run(df)
 
 # ============================================
@@ -712,7 +728,6 @@ st.write(
     "입력 즉시 아래 ‘계산된 평단’ 및 매도추천에 반영됩니다."
 )
 
-# ✅ 핵심: data_editor는 반환값을 받아서 store에 즉시 반영해야 안정적입니다.
 edited_positions = st.data_editor(
     st.session_state["positions_store"],
     use_container_width=True,
@@ -727,7 +742,7 @@ edited_positions = st.data_editor(
     },
 )
 
-# ✅ 즉시 저장(이게 “계산된 평단이 안 들어가던” 핵심 원인 해결)
+# ✅ 즉시 저장(계산된 평단/매도추천에 바로 반영)
 if isinstance(edited_positions, pd.DataFrame):
     st.session_state["positions_store"] = edited_positions.copy()
 
@@ -751,7 +766,6 @@ st.dataframe(
     }
 )
 
-# pos_map for sell signals
 pos_map = {}
 for _, r in pos.iterrows():
     pos_map[(r["ticker"], r["market"])] = dict(
@@ -845,7 +859,6 @@ st.dataframe(
     }
 )
 
-# ✅ 삼항연산 제거(DeltaGenerator 오류 해결)
 n_cand = int((df_out["candidate"] == 1).sum())
 if n_cand > 0:
     st.success(f"후보(O) {n_cand}개")
