@@ -666,7 +666,25 @@ with c1:
             rec_df["rank_score"] = rec_df["score"]
             rec_df = rec_df.sort_values(["candidate", "rank_score"], ascending=[False, False]).head(int(st.session_state["reco_n"]))
             st.subheader("추천 리스트")
-            st.dataframe(rec_df[["market","ticker","name","candidate","score","date","close","vol_ratio","atr_pct"]], use_container_width=True)
+            show_cols = ["market","ticker","name","candidate","score","date","close","vol_ratio","atr_pct"]
+
+st.data_editor(
+    rec_df[show_cols],
+    use_container_width=True,
+    hide_index=True,
+    disabled=True,
+    column_config={
+        "market": st.column_config.TextColumn("시장", width="small"),
+        "ticker": st.column_config.TextColumn("티커", width="small"),
+        "name": st.column_config.TextColumn("회사명", width="large"),
+        "candidate": st.column_config.NumberColumn("O(1)/X(0)", width="small"),
+        "score": st.column_config.NumberColumn("점수", width="small"),
+        "date": st.column_config.TextColumn("날짜", width="small"),
+        "close": st.column_config.NumberColumn("종가", width="small"),
+        "vol_ratio": st.column_config.NumberColumn("거래량배수", width="small"),
+        "atr_pct": st.column_config.NumberColumn("ATR%(%)", width="small"),
+    }
+)
 
             kr = [t for t in picks if is_kr_code(t)]
             us = [t for t in picks if not is_kr_code(t)]
