@@ -1,8 +1,9 @@
 # ============================================
-# Swing Scanner (KR/US) - FINAL (No-Reset Editor + Wide Tables)
+# Swing Scanner (KR/US) - FINAL (No-Reset Editor + Wide Tables + Entry Calc Fix)
 # - TOP10 자동추천(후보풀 스윙전략 스캔) -> 입력칸 자동삽입
 # - 분석(O/X) + 점수 + 근거표 + 차트 + 매도추천
 # - 보유(평단/진입일) 입력 리셋/롤백 방지(Widget-state -> Store sync)
+# - ✅ 평단 입력 후 계산 안됨 문제 수정(시장값 정규화 + KR/US 자동판별)
 # - KR/US 통화 입력 분리(₩ / $), ACCOUNT_SIZE 콤마 입력
 # - 엑셀 다운로드(KR=₩#,##0 / US=$#,##0.00)
 # ============================================
@@ -61,16 +62,43 @@ def normalize_tickers(raw: str):
     return [x.strip().upper() for x in items if x.strip()]
 
 def parse_entry_text(market: str, s: str):
+    """
+    ✅ 강화판:
+    - market 값 정규화(KR/US)
+    - market이 비어/이상하면 입력 문자열의 ₩/$로 추정
+    - 그래도 모르겠으면 '.' 있으면 US(소수), 없으면 KR(정수)로 추정
+    """
     if s is None:
         return np.nan
+
     t = str(s).strip()
     if not t:
         return np.nan
-    t = t.replace("₩", "").replace("$", "").replace(" ", "").replace(",", "")
+
+    # 시장값 정규화
+    m = str(market).strip().upper() if market is not None else ""
+
+    # 통화기호/공백/콤마 제거
+    raw = t.replace("₩", "").replace("$", "").replace(" ", "").replace(",", "")
+
     try:
-        if market == "KR":
-            return int(float(t))
-        return round(float(t), 2)
+        val = float(raw)
+
+        # 시장값이 비정상일 때: 통화기호로 추정
+        if m not in ("KR", "US"):
+            if "₩" in t:
+                m = "KR"
+            elif "$" in t:
+                m = "US"
+
+        if m == "KR":
+            return int(val)
+        if m == "US":
+            return round(val, 2)
+
+        # 최후의 추정
+        return round(val, 2) if "." in raw else int(val)
+
     except Exception:
         return np.nan
 
@@ -78,9 +106,10 @@ def format_currency(mkt: str, v):
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return ""
     try:
-        if mkt == "KR":
+        m = str(mkt).strip().upper()
+        if m == "KR":
             return f"₩{int(round(float(v))):,}"
-        if mkt == "US":
+        if m == "US":
             return f"${float(v):,.2f}"
         return str(v)
     except Exception:
@@ -316,6 +345,7 @@ def analyze_one_with_detail(ticker: str, p: dict):
             error="",
         )
         return res, df_ind, reason_df
+
     except Exception as e:
         res = dict(
             market="?",
@@ -472,9 +502,12 @@ def build_excel_bytes_with_formats(df_all: pd.DataFrame) -> bytes:
 def sync_positions_on_run(df_analysis: pd.DataFrame):
     base = df_analysis[["ticker", "market"]].copy()
     base["ticker"] = base["ticker"].astype(str).str.upper()
-    base["market"] = base["market"].astype(str)
+    base["market"] = base["market"].astype(str).str.strip().str.upper()
 
     ed = st.session_state["positions_editor_df"].copy()
+    ed["ticker"] = ed["ticker"].astype(str).str.upper()
+    ed["market"] = ed["market"].astype(str).str.strip().str.upper()
+
     ed = base.merge(ed, on=["ticker", "market"], how="left")
     ed["entry_text"] = ed["entry_text"].fillna("")
     ed["entry_date"] = ed["entry_date"].fillna("")
@@ -500,18 +533,15 @@ if "analysis_detail" not in st.session_state:
 if "ticker_input_text" not in st.session_state:
     st.session_state["ticker_input_text"] = "005930 000660\nSPY QQQ"
 
-# 저장소(우리가 관리하는 DF)
 if "positions_editor_df" not in st.session_state:
     st.session_state["positions_editor_df"] = pd.DataFrame(
         columns=["ticker", "market", "entry_text", "entry_date"]
     )
 
-# 계좌값 유지
 if "ACCOUNT_SIZE" not in st.session_state:
     st.session_state["ACCOUNT_SIZE"] = DEFAULTS["ACCOUNT_SIZE"]
 
-# ⭐ 핵심: data_editor 위젯 상태를 저장소로 먼저 반영(리셋 방지)
-# - data_editor는 key에 편집된 DF를 내부 저장하므로, rerun마다 그걸 가져와 positions_editor_df를 업데이트
+# ⭐ 핵심: data_editor 위젯 상태 -> 저장소 반영(리셋 방지)
 if "positions_editor_widget" in st.session_state:
     w = st.session_state["positions_editor_widget"]
     if isinstance(w, pd.DataFrame):
@@ -585,6 +615,9 @@ with st.sidebar:
     params["LOOKBACK_YEARS"] = DEFAULTS["LOOKBACK_YEARS"]
     params["TOP_N"] = DEFAULTS["TOP_N"]
 
+    st.markdown("---")
+    st.session_state["show_debug_entry"] = st.checkbox("디버그(평단 계산표) 표시", value=False)
+
 # -----------------------------
 # Input + 추천 버튼
 # -----------------------------
@@ -620,6 +653,7 @@ with c3:
                 "ticker": st.column_config.TextColumn("ticker", width="small"),
                 "market": st.column_config.TextColumn("market", width="small"),
                 "OX": st.column_config.TextColumn("O/X", width="small"),
+                "candidate": st.column_config.NumberColumn("cand", width="small"),
                 "score": st.column_config.NumberColumn("score", width="small"),
                 "date": st.column_config.TextColumn("date", width="small"),
                 "error": st.column_config.TextColumn("error", width="large"),
@@ -693,8 +727,6 @@ st.write(
     "평단은 `entry_text`에 입력하고, 계산용 평단은 아래에서 자동 계산됩니다."
 )
 
-# ✅ 여기서 return 값을 다시 덮지 않습니다.
-# ✅ key 상태를 위에서 positions_editor_df로 먼저 반영했기 때문에 입력이 안 되거나 롤백이 사라집니다.
 st.data_editor(
     st.session_state["positions_editor_df"],
     key="positions_editor_widget",
@@ -709,8 +741,11 @@ st.data_editor(
     },
 )
 
-# 계산용 entry_price 생성(편집표에 다시 밀어넣지 않음)
+# ✅ 계산 단계 (시장 정규화 필수!)
 edited_store = st.session_state["positions_editor_df"].copy()
+edited_store["ticker"] = edited_store["ticker"].astype(str).str.upper()
+edited_store["market"] = edited_store["market"].astype(str).str.strip().str.upper()
+
 pos_calc = edited_store.copy()
 pos_calc["entry_price"] = [
     parse_entry_text(m, t) for m, t in zip(pos_calc["market"], pos_calc["entry_text"])
@@ -732,10 +767,19 @@ st.dataframe(
     }
 )
 
+# (선택) 디버그: 입력→계산 원본 확인
+if st.session_state.get("show_debug_entry", False):
+    st.caption("디버그: entry_text → entry_price 원본 확인")
+    st.dataframe(
+        pos_calc[["ticker","market","entry_text","entry_price"]],
+        use_container_width=True,
+        hide_index=True
+    )
+
 # pos_map
 pos_map = {}
 for _, r in pos_calc.iterrows():
-    pos_map[(str(r["ticker"]).upper(), str(r["market"]))] = dict(
+    pos_map[(str(r["ticker"]).upper(), str(r["market"]).strip().upper())] = dict(
         entry_text=r.get("entry_text",""),
         entry_price=r.get("entry_price", np.nan),
         entry_date=r.get("entry_date",""),
@@ -745,6 +789,8 @@ for _, r in pos_calc.iterrows():
 # Add sell recommendation columns
 # -----------------------------
 df_out = df_saved.copy()
+df_out["ticker"] = df_out["ticker"].astype(str).str.upper()
+df_out["market"] = df_out["market"].astype(str).str.strip().str.upper()
 
 sell_sig, sell_reason = [], []
 hold_days_list = []
@@ -753,7 +799,7 @@ entry_text_list, entry_price_list = [], []
 
 for _, row in df_out.iterrows():
     tkr = str(row["ticker"]).upper()
-    mkt = str(row["market"])
+    mkt = str(row["market"]).strip().upper()
     info = pos_map.get((tkr, mkt), {})
     entry_text = info.get("entry_text", "")
     entry_price = info.get("entry_price", np.nan)
@@ -855,7 +901,7 @@ st.subheader("근거(조건표 + 차트)")
 
 for _, row in df_out.iterrows():
     tkr = str(row["ticker"]).upper()
-    mkt = str(row.get("market",""))
+    mkt = str(row.get("market","")).strip().upper()
     ox = row.get("O/X", row.get("OX",""))
     sig = row.get("sell_signal","")
     err = row.get("error","")
