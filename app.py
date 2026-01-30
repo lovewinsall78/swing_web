@@ -24,7 +24,7 @@ US_UNIVERSE = ["SPY","QQQ","NVDA","AAPL","MSFT","TSLA","AMZN","GOOGL","META","AM
 st.set_page_config(page_title="Swing Scanner Final", layout="wide")
 
 # -----------------------------
-# 2. Utils (Parsing & Formatting)
+# 2. Utils
 # -----------------------------
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", str(x).strip()))
@@ -43,7 +43,9 @@ def parse_entry_val(market, text):
 
 def format_curr(mkt, v):
     if not v or v == 0 or pd.isna(v): return ""
-    return f"₩{int(v):,}" if mkt == "KR" else f"${float(v):,.2f}"
+    try:
+        return f"₩{int(v):,}" if mkt == "KR" else f"${float(v):,.2f}"
+    except: return str(v)
 
 # -----------------------------
 # 3. Session State & Callbacks
@@ -58,7 +60,6 @@ if "ticker_input" not in st.session_state:
     st.session_state.ticker_input = "005930 NVDA"
 
 def on_pos_edit():
-    """데이터 에디터 수정 시 즉시 평단 및 디스플레이 계산"""
     if "pos_editor" in st.session_state:
         ed = st.session_state["pos_editor"]["edited_rows"]
         for idx, changes in ed.items():
@@ -71,12 +72,12 @@ def on_pos_edit():
                 st.session_state.pos_df.at[idx_int, "entry_display"] = format_curr(mkt, new_val)
 
 # -----------------------------
-# 4. Data Engine (KR/US)
+# 4. Data Engine
 # -----------------------------
 @st.cache_data(ttl=3600)
 def get_company_name(ticker):
     try:
-        if is_kr_code(ticker): return krx.get_market_ticker_name(ticker)
+        if is_kr_code(ticker): return krx.get_market_ticker_name(ticker) or ticker
         return yf.Ticker(ticker).info.get("shortName", ticker)
     except: return ticker
 
@@ -97,12 +98,12 @@ def load_data(ticker, years):
 
 def analyze_one(ticker, p):
     df = load_data(ticker, p["LOOKBACK_YEARS"])
-    if df.empty: return {"error": f"Data Error: {ticker}"}, None, None
+    if df.empty: return {"error": f"Data Error: {ticker}", "ticker": ticker, "name": ticker, "OX": "X", "candidate": 0}, None, None
     
+    # 지표 계산
     df["MA_FAST"] = df["Close"].rolling(int(p["MA_FAST"])).mean()
     df["MA_SLOW"] = df["Close"].rolling(int(p["MA_SLOW"])).mean()
     df["VOL_AVG"] = df["Volume"].rolling(int(p["VOL_LOOKBACK"])).mean()
-    # TR & ATR
     tr = pd.concat([(df["High"]-df["Low"]), (df["High"]-df["Close"].shift()).abs(), (df["Low"]-df["Close"].shift()).abs()], axis=1).max(axis=1)
     df["ATR"] = tr.rolling(int(p["ATR_PERIOD"])).mean()
     df["VOL_RATIO"] = df["Volume"] / df["VOL_AVG"]
@@ -114,11 +115,6 @@ def analyze_one(ticker, p):
     c3 = p["ATR_PCT_MIN"] <= last["ATR_PCT"] <= p["ATR_PCT_MAX"]
     cand = 1 if (c1 and c2 and c3) else 0
     
-    # Score
-    score = 40 if c1 else 0
-    score += int(min(25, max(0, (last["VOL_RATIO"]-1)*20)))
-    
-    # Pos Sizing
     stop_dist = p["STOP_ATR_MULT"] * last["ATR"]
     qty = int((p["ACCOUNT_SIZE"] * p["RISK_PER_TRADE"]) / stop_dist) if stop_dist > 0 else 0
     
@@ -128,144 +124,96 @@ def analyze_one(ticker, p):
         "name": get_company_name(ticker),
         "OX": "O" if cand else "X",
         "candidate": cand,
-        "score": score,
-        "close": last["Close"],
-        "stop": last["Close"] - stop_dist,
-        "target_2R": last["Close"] + (stop_dist * 2),
+        "score": (40 if c1 else 0) + int(min(25, max(0, (last["VOL_RATIO"]-1)*20))),
+        "close": float(last["Close"]),
+        "stop": float(last["Close"] - stop_dist),
+        "target_2R": float(last["Close"] + (stop_dist * 2)),
         "qty": qty,
-        "vol_ratio": last["VOL_RATIO"],
-        "atr_pct": last["ATR_PCT"] * 100,
+        "vol_ratio": float(last["VOL_RATIO"]),
+        "atr_pct": float(last["ATR_PCT"] * 100),
         "date": str(df.index[-1].date()),
         "error": ""
     }
     
-    # Reason Table
-    reasons = pd.DataFrame([
+    rereasons = pd.DataFrame([
         {"조건": "이평선 정배열", "값": f"{last['MA_FAST']:.0f} > {last['MA_SLOW']:.0f}", "통과": last['MA_FAST'] > last['MA_SLOW']},
         {"조건": "거래량 급증", "값": f"{last['VOL_RATIO']:.2f}x", "통과": c2},
         {"조건": "변동성(ATR%)", "값": f"{last['ATR_PCT']*100:.2f}%", "통과": c3}
     ])
-    
-    return res, df, reasons
+    return res, df, rereasons
 
 # -----------------------------
-# 5. Sidebar & UI Inputs
+# 5. UI Layout
 # -----------------------------
 with st.sidebar:
     st.header("⚙️ 전략 설정")
     params = {k: st.number_input(k, value=v) for k, v in DEFAULTS.items() if k not in ["LOOKBACK_YEARS", "TOP_N"]}
     params["LOOKBACK_YEARS"] = DEFAULTS["LOOKBACK_YEARS"]
     
-    st.markdown("---")
-    if st.button("TOP10 추천 스캔"):
-        with st.spinner("유니버스 분석 중..."):
+    if st.button("추천 종목 스캔"):
+        with st.spinner("스캔 중..."):
             all_u = KR_UNIVERSE + US_UNIVERSE
             picks = []
             for t in all_u:
                 r, _, _ = analyze_one(t, params)
                 if r.get("candidate"): picks.append(r)
             if picks:
-                top_ticks = pd.DataFrame(picks).sort_values("score", ascending=False).head(10)["ticker"].tolist()
-                st.session_state.ticker_input = " ".join(top_ticks)
+                st.session_state.ticker_input = " ".join(pd.DataFrame(picks).sort_values("score", ascending=False).head(10)["ticker"].tolist())
                 st.rerun()
 
-# -----------------------------
-# 6. Main Logic
-# -----------------------------
 st.title("⚖️ Swing Scanner FINAL")
-
-raw_input = st.text_area("티커 입력 (공백/줄바꿈)", value=st.session_state.ticker_input, height=100)
+raw_input = st.text_area("티커 입력", value=st.session_state.ticker_input)
 
 if st.button("🚀 분석 실행"):
     tickers = normalize_tickers(raw_input)
     results = []
     details = {}
-    
-    prog = st.progress(0)
-    for i, t in enumerate(tickers):
+    for t in tickers:
         res, df, reason = analyze_one(t, params)
         results.append(res)
         if df is not None: details[t] = (df, reason)
-        prog.progress((i+1)/len(tickers))
-    
     st.session_state.analysis_df = pd.DataFrame(results)
     st.session_state.analysis_detail = details
     
-    # 포지션 테이블 업데이트 (기존 데이터 유지)
     new_rows = []
     for _, row in st.session_state.analysis_df.iterrows():
         exist = st.session_state.pos_df[st.session_state.pos_df["ticker"] == row["ticker"]]
-        if not exist.empty:
-            new_rows.append(exist.iloc[0].to_dict())
-        else:
-            new_rows.append({
-                "market": row["market"], "ticker": row["ticker"], "name": row["name"],
-                "entry_text": "", "entry_price": 0.0, "entry_display": "", "entry_date": None
-            })
+        if not exist.empty: new_rows.append(exist.iloc[0].to_dict())
+        else: new_rows.append({"market": row["market"], "ticker": row["ticker"], "name": row["name"], "entry_text": "", "entry_price": 0.0, "entry_display": "", "entry_date": None})
     st.session_state.pos_df = pd.DataFrame(new_rows)
 
 # -----------------------------
-# 7. Results Display
+# 6. 결과 출력 (포지션 입력 즉시 반영)
 # -----------------------------
 if st.session_state.analysis_df is not None:
-    # A. 포지션 입력 (즉시 반영)
     st.subheader("📥 보유 종목 평단 입력")
-    st.info("💡 평단가 입력 시 '✅ 계산된 평단'이 즉시 업데이트됩니다.")
-    st.data_editor(
-        st.session_state.pos_df,
-        key="pos_editor",
-        on_change=on_pos_edit,
-        column_config={
-            "entry_text": st.column_config.TextColumn("평단 입력 (예: 55000)"),
-            "entry_display": st.column_config.TextColumn("✅ 계산된 평단", disabled=True),
-            "entry_date": st.column_config.DateColumn("진입일"),
-            "market": None, "entry_price": None # 숨김
-        },
-        hide_index=True, use_container_width=True
-    )
+    st.data_editor(st.session_state.pos_df, key="pos_editor", on_change=on_pos_edit,
+        column_config={"entry_text": st.column_config.TextColumn("평단가 입력"), "entry_display": st.column_config.TextColumn("✅ 계산된 평단", disabled=True), "entry_date": st.column_config.DateColumn("진입일"), "market": None, "entry_price": None},
+        hide_index=True, use_container_width=True)
 
-    # B. 결과 요약표
-    st.subheader("🔍 분석 결과 및 매도 추천")
+    st.subheader("🔍 분석 결과 요약")
     df_view = st.session_state.analysis_df.copy()
     
-    def get_sell_logic(r):
+    def get_sell_sig(r):
         pos = st.session_state.pos_df[st.session_state.pos_df["ticker"] == r["ticker"]]
-        if pos.empty or not pos.iloc[0]["entry_price"]: return "N/A", "평단 없음"
-        
+        if pos.empty or not pos.iloc[0]["entry_price"]: return "N/A", "-"
         entry = pos.iloc[0]["entry_price"]
         curr = r["close"]
-        stop_val = entry - (params["STOP_ATR_MULT"] * (r["close"] * (r["atr_pct"]/100))) # 근사치
-        
+        stop_val = entry * 0.95 # 예시: 단순 -5% 손절
         if curr < stop_val: return "SELL", "손절가 이탈"
-        if curr > entry + (entry - stop_val)*2: return "PARTIAL", "목표가 도달"
-        return "HOLD", "추세 유지"
+        if curr > entry * 1.2: return "PARTIAL", "목표가 도달"
+        return "HOLD", "유지"
 
-    df_view[["매도신호", "매도근거"]] = df_view.apply(lambda r: pd.Series(get_sell_logic(r)), axis=1)
+    df_view[["매도신호", "매도근거"]] = df_view.apply(lambda r: pd.Series(get_sell_sig(r)), axis=1)
     
-    # 포맷팅
+    # 통화 포맷팅
     for col in ["close", "stop", "target_2R"]:
         df_view[col] = df_view.apply(lambda r: format_curr(r["market"], r[col]), axis=1)
         
     st.dataframe(df_view, use_container_width=True, hide_index=True)
 
-    # C. 상세 차트 & 근거
-    st.markdown("---")
-    for t in df_view["ticker"]:
-        if t in st.session_state.analysis_detail:
-            with st.expander(f"📊 {t} 상세 근거 및 차트"):
-                df_hist, reasons = st.session_state.analysis_detail[t]
-                col1, col2 = st.columns([1, 2])
-                with col1: st.table(reasons)
-                with col2:
-                    c = alt.Chart(df_hist.reset_index()).mark_line().encode(x='Date:T', y='Close:Q').properties(height=300)
-                    st.altair_chart(c, use_container_width=True)
-
-# -----------------------------
-# 8. Excel Download
-# -----------------------------
-if st.session_state.analysis_df is not None:
+    # 엑셀 다운로드 (엔진 변경: xlsxwriter -> openpyxl)
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        st.session_state.analysis_df.to_excel(writer, index=False, sheet_name='Summary')
-        st.session_state.pos_df.to_excel(writer, index=False, sheet_name='Positions')
-    st.download_button("📂 전체 결과 엑셀 다운로드", output.getvalue(), "Swing_Scanner_Report.xlsx")
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_view.to_excel(writer, index=False, sheet_name='Summary')
+    st.download_button("📂 엑셀 다운로드", output.getvalue(), "Swing_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
