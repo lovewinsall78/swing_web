@@ -24,7 +24,7 @@ US_UNIVERSE = ["SPY","QQQ","NVDA","AAPL","MSFT","TSLA","AMZN","GOOGL","META","AM
 st.set_page_config(page_title="Swing Scanner Final Pro", layout="wide")
 
 # -----------------------------
-# 2. Utility Functions (정의 순서 준수)
+# 2. Utility Functions
 # -----------------------------
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", str(x).strip()))
@@ -35,6 +35,7 @@ def normalize_tickers(raw: str):
 
 @st.cache_data(ttl=3600)
 def get_company_name(t):
+    if t == "BTC-USD": return "Bitcoin"
     try:
         if is_kr_code(t): return krx.get_market_ticker_name(t) or t
         return yf.Ticker(t).info.get("shortName", t)
@@ -61,8 +62,9 @@ if "pos_df" not in st.session_state:
     st.session_state.pos_df = pd.DataFrame(columns=["market","ticker","name","entry_text","entry_price","entry_display","entry_date"])
 if "analysis_df" not in st.session_state:
     st.session_state.analysis_df = None
+# 비트코인을 기본값으로 설정
 if "ticker_input" not in st.session_state:
-    st.session_state.ticker_input = "005930 NVDA"
+    st.session_state.ticker_input = "BTC-USD 005930 NVDA"
 
 def on_pos_edit():
     if "pos_editor" in st.session_state:
@@ -146,7 +148,7 @@ with st.sidebar:
 # -----------------------------
 st.title("⚖️ Swing Scanner Final Pro")
 
-# 추천 버튼을 티커 입력란 바로 위로 이동
+# 추천 버튼을 티커 입력란 바로 위 배치
 col_btn1, col_btn2 = st.columns([1, 4])
 with col_btn1:
     if st.button("🌟 국산5+외산5 추천"):
@@ -157,10 +159,11 @@ with col_btn1:
             us_picks = [analyze_one(t, params)[0] for t in US_UNIVERSE]
             us_top = pd.DataFrame([p for p in us_picks if p["candidate"]]).sort_values("score", ascending=False).head(5)["ticker"].tolist()
             
-            st.session_state.ticker_input = " ".join(kr_top + us_top)
+            # 추천 시에도 비트코인을 항상 맨 앞에 포함
+            st.session_state.ticker_input = " ".join(["BTC-USD"] + kr_top + us_top)
             st.rerun()
 
-ticker_area = st.text_area("분석 티커 입력", value=st.session_state.ticker_input, height=100, help="공백이나 줄바꿈으로 구분하세요.")
+ticker_area = st.text_area("분석 티커 입력", value=st.session_state.ticker_input, height=100)
 
 if st.button("🚀 분석 실행", type="primary"):
     tickers = normalize_tickers(ticker_area)
