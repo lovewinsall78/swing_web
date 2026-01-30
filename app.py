@@ -151,7 +151,7 @@ st.title("⚖️ Swing Scanner Final Pro")
 # 추천 버튼을 티커 입력란 바로 위 배치
 col_btn1, col_btn2 = st.columns([1, 4])
 with col_btn1:
-    if st.button("🌟 국산5+외산5 추천"):
+    if st.button("🌟 국장5+미장5 추천"):
         with st.spinner("최적의 종목 분석 중..."):
             kr_picks = [analyze_one(t, params)[0] for t in KR_UNIVERSE]
             kr_top = pd.DataFrame([p for p in kr_picks if p["candidate"]]).sort_values("score", ascending=False).head(5)["ticker"].tolist()
