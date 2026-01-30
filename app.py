@@ -24,7 +24,7 @@ US_UNIVERSE = ["SPY","QQQ","NVDA","AAPL","MSFT","TSLA","AMZN","GOOGL","META","AM
 st.set_page_config(page_title="Swing Scanner Final Pro", layout="wide")
 
 # -----------------------------
-# 2. 핵심 유틸리티 (함수 정의 순서 최적화)
+# 2. Utility Functions (정의 순서 준수)
 # -----------------------------
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", str(x).strip()))
@@ -55,7 +55,7 @@ def format_curr(mkt, v):
     except: return str(v)
 
 # -----------------------------
-# 3. 세션 상태 및 콜백
+# 3. Session State & Callbacks
 # -----------------------------
 if "pos_df" not in st.session_state:
     st.session_state.pos_df = pd.DataFrame(columns=["market","ticker","name","entry_text","entry_price","entry_display","entry_date"])
@@ -65,7 +65,6 @@ if "ticker_input" not in st.session_state:
     st.session_state.ticker_input = "005930 NVDA"
 
 def on_pos_edit():
-    """평단가 입력 시 즉시 반영되는 콜백"""
     if "pos_editor" in st.session_state:
         ed = st.session_state["pos_editor"]["edited_rows"]
         for idx, changes in ed.items():
@@ -79,7 +78,7 @@ def on_pos_edit():
                 st.session_state.pos_df.at[idx_int, "entry_display"] = format_curr(mkt, new_val)
 
 # -----------------------------
-# 4. 분석 엔진
+# 4. Analysis Engine
 # -----------------------------
 @st.cache_data(ttl=1200)
 def load_data(ticker, years):
@@ -135,39 +134,35 @@ def analyze_one(ticker, p):
     return res, df
 
 # -----------------------------
-# 5. UI Sidebar (추천 기능)
+# 5. Sidebar (Params)
 # -----------------------------
 with st.sidebar:
     st.header("⚙️ 전략 설정")
     params = {k: st.number_input(k, value=v) for k, v in DEFAULTS.items() if k != "LOOKBACK_YEARS"}
     params["LOOKBACK_YEARS"] = DEFAULTS["LOOKBACK_YEARS"]
-    
-    st.markdown("---")
+
+# -----------------------------
+# 6. Main UI
+# -----------------------------
+st.title("⚖️ Swing Scanner Final Pro")
+
+# 추천 버튼을 티커 입력란 바로 위로 이동
+col_btn1, col_btn2 = st.columns([1, 4])
+with col_btn1:
     if st.button("🌟 국산5+외산5 추천"):
-        with st.spinner("최적의 종목 찾는 중..."):
-            kr_picks = []
-            for t in KR_UNIVERSE:
-                r, _ = analyze_one(t, params)
-                if r["candidate"]: kr_picks.append(r)
-            kr_top = pd.DataFrame(kr_picks).sort_values("score", ascending=False).head(5)["ticker"].tolist()
+        with st.spinner("최적의 종목 분석 중..."):
+            kr_picks = [analyze_one(t, params)[0] for t in KR_UNIVERSE]
+            kr_top = pd.DataFrame([p for p in kr_picks if p["candidate"]]).sort_values("score", ascending=False).head(5)["ticker"].tolist()
             
-            us_picks = []
-            for t in US_UNIVERSE:
-                r, _ = analyze_one(t, params)
-                if r["candidate"]: us_picks.append(r)
-            us_top = pd.DataFrame(us_picks).sort_values("score", ascending=False).head(5)["ticker"].tolist()
+            us_picks = [analyze_one(t, params)[0] for t in US_UNIVERSE]
+            us_top = pd.DataFrame([p for p in us_picks if p["candidate"]]).sort_values("score", ascending=False).head(5)["ticker"].tolist()
             
             st.session_state.ticker_input = " ".join(kr_top + us_top)
             st.rerun()
 
-# -----------------------------
-# 6. 메인 화면
-# -----------------------------
-st.title("⚖️ Swing Scanner Final Pro")
+ticker_area = st.text_area("분석 티커 입력", value=st.session_state.ticker_input, height=100, help="공백이나 줄바꿈으로 구분하세요.")
 
-ticker_area = st.text_area("티커 입력 (공백 구분)", value=st.session_state.ticker_input, height=100)
-
-if st.button("🚀 분석 실행"):
+if st.button("🚀 분석 실행", type="primary"):
     tickers = normalize_tickers(ticker_area)
     results = []
     for t in tickers:
@@ -176,7 +171,6 @@ if st.button("🚀 분석 실행"):
     
     st.session_state.analysis_df = pd.DataFrame(results)
     
-    # 포지션 테이블 업데이트
     new_rows = []
     for _, row in st.session_state.analysis_df.iterrows():
         exist = st.session_state.pos_df[st.session_state.pos_df["ticker"] == row["ticker"]]
@@ -191,10 +185,10 @@ if st.button("🚀 분석 실행"):
     st.session_state.pos_df["entry_date"] = pd.to_datetime(st.session_state.pos_df["entry_date"])
 
 # -----------------------------
-# 7. 결과 렌더링
+# 7. 결과 화면
 # -----------------------------
 if st.session_state.analysis_df is not None:
-    st.subheader("📥 보유 종목 평단 입력 (즉시 반영)")
+    st.subheader("📥 보유 종목 평단 관리")
     st.data_editor(
         st.session_state.pos_df,
         key="pos_editor",
@@ -216,9 +210,9 @@ if st.session_state.analysis_df is not None:
         if pos.empty or not pos.iloc[0]["entry_price"]: return "HOLD", "-"
         entry = pos.iloc[0]["entry_price"]
         curr = r["close"]
-        if curr < entry * 0.95: return "🔴 SELL", "손절가 하향"
-        if curr > entry * 1.15: return "🟢 TAKE", "익절구간"
-        return "⚪ HOLD", "보유"
+        if curr < entry * 0.95: return "🔴 SELL", "손절"
+        if curr > entry * 1.15: return "🟢 TAKE", "익절"
+        return "⚪ HOLD", "유지"
 
     df_view[["Signal", "Reason"]] = df_view.apply(lambda r: pd.Series(sell_logic(r)), axis=1)
     
@@ -228,11 +222,8 @@ if st.session_state.analysis_df is not None:
     
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-    # 엑셀 다운로드 (openpyxl)
+    # 엑셀 다운로드
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_view.to_excel(writer, index=False)
     st.download_button("📂 엑셀 보고서 다운로드", output.getvalue(), "Swing_Report.xlsx")
-
-st.markdown("---")
-st.caption("Swing Scanner | 모든 함수 정의를 분석 실행부 위로 이동하여 NameError를 해결했습니다.")
