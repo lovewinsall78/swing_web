@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import altair as alt
 
 # -----------------------------
-# 1. Defaults & Config
+# 1. Defaults & Config (초기 설정)
 # -----------------------------
 DEFAULTS = dict(
     MA_FAST=20, MA_SLOW=60, ATR_PERIOD=14, VOL_LOOKBACK=20,
@@ -18,13 +18,13 @@ DEFAULTS = dict(
     ACCOUNT_SIZE=10_000_000, RISK_PER_TRADE=0.01, TOP_N=10,
 )
 
-KR_UNIVERSE = ["005930","000660","035420","035720","051910","068270","207940","005380","000270","012330"]
-US_UNIVERSE = ["SPY","QQQ","NVDA","AAPL","MSFT","TSLA","AMZN","GOOGL","META","AMD"]
+KR_UNIVERSE = ["005930","000660","035420","035720","051910","068270","207940","005380","000270","012330","066570","003550"]
+US_UNIVERSE = ["SPY","QQQ","NVDA","AAPL","MSFT","TSLA","AMZN","GOOGL","META","AMD","AVGO","NFLX"]
 
-st.set_page_config(page_title="Swing Scanner Final", layout="wide")
+st.set_page_config(page_title="Swing Scanner Final Pro", layout="wide")
 
 # -----------------------------
-# 2. Utils
+# 2. Utils (파싱 및 포맷팅)
 # -----------------------------
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", str(x).strip()))
@@ -44,11 +44,12 @@ def parse_entry_val(market, text):
 def format_curr(mkt, v):
     if not v or v == 0 or pd.isna(v): return ""
     try:
-        return f"₩{int(v):,}" if mkt == "KR" else f"${float(v):,.2f}"
+        if mkt == "KR": return f"₩{int(round(float(v))):,}"
+        return f"${float(v):,.2f}"
     except: return str(v)
 
 # -----------------------------
-# 3. Session State & Callbacks
+# 3. Session State (상태 관리 및 즉시 반영 콜백)
 # -----------------------------
 if "pos_df" not in st.session_state:
     st.session_state.pos_df = pd.DataFrame(columns=["market","ticker","name","entry_text","entry_price","entry_display","entry_date"])
@@ -60,6 +61,7 @@ if "ticker_input" not in st.session_state:
     st.session_state.ticker_input = "005930 NVDA"
 
 def on_pos_edit():
+    """데이터 에디터 수정 시 즉시 평단 및 디스플레이 계산 (Rerun 없이 반영)"""
     if "pos_editor" in st.session_state:
         ed = st.session_state["pos_editor"]["edited_rows"]
         for idx, changes in ed.items():
@@ -68,11 +70,12 @@ def on_pos_edit():
             if "entry_text" in changes:
                 new_text = changes["entry_text"]
                 new_val = parse_entry_val(mkt, new_text)
+                st.session_state.pos_df.at[idx_int, "entry_text"] = str(new_text)
                 st.session_state.pos_df.at[idx_int, "entry_price"] = float(new_val)
                 st.session_state.pos_df.at[idx_int, "entry_display"] = format_curr(mkt, new_val)
 
 # -----------------------------
-# 4. Data Engine
+# 4. Data & Analysis Engine
 # -----------------------------
 @st.cache_data(ttl=3600)
 def get_company_name(ticker):
@@ -98,9 +101,8 @@ def load_data(ticker, years):
 
 def analyze_one(ticker, p):
     df = load_data(ticker, p["LOOKBACK_YEARS"])
-    if df.empty: return {"error": f"Data Error: {ticker}", "ticker": ticker, "name": ticker, "OX": "X", "candidate": 0}, None, None
+    if df.empty: return {"error": f"Data Error", "ticker": ticker, "OX": "X", "candidate": 0}, None, None
     
-    # 지표 계산
     df["MA_FAST"] = df["Close"].rolling(int(p["MA_FAST"])).mean()
     df["MA_SLOW"] = df["Close"].rolling(int(p["MA_SLOW"])).mean()
     df["VOL_AVG"] = df["Volume"].rolling(int(p["VOL_LOOKBACK"])).mean()
@@ -135,85 +137,147 @@ def analyze_one(ticker, p):
         "error": ""
     }
     
-    rereasons = pd.DataFrame([
-        {"조건": "이평선 정배열", "값": f"{last['MA_FAST']:.0f} > {last['MA_SLOW']:.0f}", "통과": last['MA_FAST'] > last['MA_SLOW']},
-        {"조건": "거래량 급증", "값": f"{last['VOL_RATIO']:.2f}x", "통과": c2},
-        {"조건": "변동성(ATR%)", "값": f"{last['ATR_PCT']*100:.2f}%", "통과": c3}
+    reasons = pd.DataFrame([
+        {"조건": "이평선 정배열", "현재값": f"{last['MA_FAST']:.0f} > {last['MA_SLOW']:.0f}", "통과": last['MA_FAST'] > last['MA_SLOW']},
+        {"조건": "거래량 급증", "현재값": f"{last['VOL_RATIO']:.2f}x", "통과": c2},
+        {"조건": "변동성(ATR%)", "현재값": f"{last['ATR_PCT']*100:.2f}%", "통과": c3}
     ])
-    return res, df, rereasons
+    return res, df, reasons
 
 # -----------------------------
-# 5. UI Layout
+# 5. UI Layout (Sidebar)
 # -----------------------------
 with st.sidebar:
-    st.header("⚙️ 전략 설정")
+    st.header("⚙️ 스윙 전략 설정")
     params = {k: st.number_input(k, value=v) for k, v in DEFAULTS.items() if k not in ["LOOKBACK_YEARS", "TOP_N"]}
     params["LOOKBACK_YEARS"] = DEFAULTS["LOOKBACK_YEARS"]
     
-    if st.button("추천 종목 스캔"):
-        with st.spinner("스캔 중..."):
+    st.markdown("---")
+    if st.button("균형 추천 스캔 (KR/US)"):
+        with st.spinner("최적 후보 탐색 중..."):
             all_u = KR_UNIVERSE + US_UNIVERSE
             picks = []
             for t in all_u:
                 r, _, _ = analyze_one(t, params)
                 if r.get("candidate"): picks.append(r)
             if picks:
-                st.session_state.ticker_input = " ".join(pd.DataFrame(picks).sort_values("score", ascending=False).head(10)["ticker"].tolist())
+                top_ticks = pd.DataFrame(picks).sort_values("score", ascending=False).head(10)["ticker"].tolist()
+                st.session_state.ticker_input = " ".join(top_ticks)
                 st.rerun()
 
-st.title("⚖️ Swing Scanner FINAL")
-raw_input = st.text_area("티커 입력", value=st.session_state.ticker_input)
+# -----------------------------
+# 6. Main UI (분석 실행)
+# -----------------------------
+st.markdown("<h1 style='font-size:32px;'>⚖️ Swing Scanner FINAL</h1>", unsafe_allow_html=True)
+raw_input = st.text_area("티커 입력 (KR 6자리 / US 티커)", value=st.session_state.ticker_input, height=100)
 
-if st.button("🚀 분석 실행"):
+if st.button("🚀 분석 및 스캔 실행"):
     tickers = normalize_tickers(raw_input)
     results = []
     details = {}
-    for t in tickers:
+    
+    prog = st.progress(0)
+    for i, t in enumerate(tickers):
         res, df, reason = analyze_one(t, params)
         results.append(res)
         if df is not None: details[t] = (df, reason)
+        prog.progress((i+1)/len(tickers))
+    
     st.session_state.analysis_df = pd.DataFrame(results)
     st.session_state.analysis_detail = details
     
+    # 포지션 테이블 업데이트
     new_rows = []
     for _, row in st.session_state.analysis_df.iterrows():
         exist = st.session_state.pos_df[st.session_state.pos_df["ticker"] == row["ticker"]]
-        if not exist.empty: new_rows.append(exist.iloc[0].to_dict())
-        else: new_rows.append({"market": row["market"], "ticker": row["ticker"], "name": row["name"], "entry_text": "", "entry_price": 0.0, "entry_display": "", "entry_date": None})
+        if not exist.empty:
+            new_rows.append(exist.iloc[0].to_dict())
+        else:
+            new_rows.append({
+                "market": row["market"], "ticker": row["ticker"], "name": row["name"],
+                "entry_text": "", "entry_price": 0.0, "entry_display": "", "entry_date": None
+            })
     st.session_state.pos_df = pd.DataFrame(new_rows)
+    # 데이터 타입 강제 (에러 방지)
+    st.session_state.pos_df["entry_date"] = pd.to_datetime(st.session_state.pos_df["entry_date"])
 
 # -----------------------------
-# 6. 결과 출력 (포지션 입력 즉시 반영)
+# 7. 결과 렌더링
 # -----------------------------
 if st.session_state.analysis_df is not None:
-    st.subheader("📥 보유 종목 평단 입력")
-    st.data_editor(st.session_state.pos_df, key="pos_editor", on_change=on_pos_edit,
-        column_config={"entry_text": st.column_config.TextColumn("평단가 입력"), "entry_display": st.column_config.TextColumn("✅ 계산된 평단", disabled=True), "entry_date": st.column_config.DateColumn("진입일"), "market": None, "entry_price": None},
-        hide_index=True, use_container_width=True)
+    # A. 평단 입력 (즉시 반영 에디터)
+    st.subheader("📥 보유 종목 관리")
+    st.info("💡 '평단 입력' 칸에 숫자를 넣으면 '✅ 계산된 평단'이 즉시 업데이트됩니다.")
+    st.data_editor(
+        st.session_state.pos_df,
+        key="pos_editor",
+        on_change=on_pos_edit,
+        column_config={
+            "entry_text": st.column_config.TextColumn("평단 입력 (예: 55000)"),
+            "entry_display": st.column_config.TextColumn("✅ 계산된 평단", disabled=True),
+            "entry_date": st.column_config.DateColumn("진입일"),
+            "market": None, "entry_price": None, "name": st.column_config.TextColumn("회사명", disabled=True)
+        },
+        hide_index=True, use_container_width=True
+    )
 
-    st.subheader("🔍 분석 결과 요약")
+    # B. 요약 결과표 (매도 신호 포함)
+    st.subheader("🔍 분석 결과 및 매도 추천")
     df_view = st.session_state.analysis_df.copy()
     
-    def get_sell_sig(r):
+    def get_sell_logic(r):
         pos = st.session_state.pos_df[st.session_state.pos_df["ticker"] == r["ticker"]]
-        if pos.empty or not pos.iloc[0]["entry_price"]: return "N/A", "-"
+        if pos.empty or not pos.iloc[0]["entry_price"] or pos.iloc[0]["entry_price"] == 0:
+            return "N/A", "평단 정보 없음"
+        
         entry = pos.iloc[0]["entry_price"]
         curr = r["close"]
-        stop_val = entry * 0.95 # 예시: 단순 -5% 손절
-        if curr < stop_val: return "SELL", "손절가 이탈"
-        if curr > entry * 1.2: return "PARTIAL", "목표가 도달"
-        return "HOLD", "유지"
-
-    df_view[["매도신호", "매도근거"]] = df_view.apply(lambda r: pd.Series(get_sell_sig(r)), axis=1)
-    
-    # 통화 포맷팅
-    for col in ["close", "stop", "target_2R"]:
-        df_view[col] = df_view.apply(lambda r: format_curr(r["market"], r[col]), axis=1)
+        # 매도 로직: 평단 대비 ATR 1.8배 하락 시 손절
+        stop_val = entry - (params["STOP_ATR_MULT"] * (r["close"] * (r["atr_pct"]/100)))
         
-    st.dataframe(df_view, use_container_width=True, hide_index=True)
+        if curr < stop_val: return "🔴 SELL", "손절가 이탈"
+        if curr > entry + (entry - stop_val)*2: return "🟢 PARTIAL", "익절(2R) 도달"
+        return "⚪ HOLD", "추세 유지 중"
 
-    # 엑셀 다운로드 (엔진 변경: xlsxwriter -> openpyxl)
+    df_view[["매도신호", "매도근거"]] = df_view.apply(lambda r: pd.Series(get_sell_logic(r)), axis=1)
+    
+    # 표시용 포맷팅
+    display_df = df_view.copy()
+    for col in ["close", "stop", "target_2R"]:
+        display_df[col] = display_df.apply(lambda r: format_curr(r["market"], r[col]), axis=1)
+        
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    # C. 상세 근거 (차트 및 조건표)
+    st.markdown("---")
+    st.subheader("📊 종목별 상세 근거")
+    for t in df_view["ticker"]:
+        if t in st.session_state.analysis_detail:
+            with st.expander(f"{t} ({get_company_name(t)}) 상세 분석 보기"):
+                df_hist, reasons = st.session_state.analysis_detail[t]
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.write("**매수 조건 검토**")
+                    st.table(reasons)
+                with col2:
+                    st.write("**가격 흐름 (최근)**")
+                    c = alt.Chart(df_hist.reset_index().tail(100)).mark_line(color='#1f77b4').encode(
+                        x='Date:T', y=alt.Y('Close:Q', scale=alt.Scale(zero=False))
+                    ).properties(height=300)
+                    st.altair_chart(c, use_container_width=True)
+
+    # D. 엑셀 다운로드 (openpyxl 엔진 사용으로 에러 방지)
+    st.markdown("---")
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_view.to_excel(writer, index=False, sheet_name='Summary')
-    st.download_button("📂 엑셀 다운로드", output.getvalue(), "Swing_Report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        df_view.to_excel(writer, index=False, sheet_name='Summary_Report')
+    
+    st.download_button(
+        label="📂 분석 결과 엑셀 다운로드",
+        data=output.getvalue(),
+        file_name=f"Swing_Scanner_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+st.markdown("---")
+st.caption("Swing Scanner Final Pro | Built with Streamlit & PyKRX & YFinance")
