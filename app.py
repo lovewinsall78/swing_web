@@ -9,22 +9,23 @@ from datetime import datetime, timedelta
 import altair as alt
 
 # -----------------------------
-# 1. Defaults & Config (초기 설정)
+# 1. Defaults & Config
 # -----------------------------
 DEFAULTS = dict(
     MA_FAST=20, MA_SLOW=60, ATR_PERIOD=14, VOL_LOOKBACK=20,
     VOL_SPIKE=1.5, ATR_PCT_MIN=0.008, ATR_PCT_MAX=0.060,
-    STOP_ATR_MULT=1.8, HOLD_DAYS=20, LOOKBACK_YEARS=2,
-    ACCOUNT_SIZE=10_000_000, RISK_PER_TRADE=0.01, TOP_N=10,
+    STOP_ATR_MULT=1.8, ACCOUNT_SIZE=10_000_000, RISK_PER_TRADE=0.01,
+    LOOKBACK_YEARS=2
 )
 
-KR_UNIVERSE = ["005930","000660","035420","035720","051910","068270","207940","005380","000270","012330","066570","003550"]
-US_UNIVERSE = ["SPY","QQQ","NVDA","AAPL","MSFT","TSLA","AMZN","GOOGL","META","AMD","AVGO","NFLX"]
+# 유니버스 구성 (전략 검증용 리스트)
+KR_UNIVERSE = ["005930","000660","035420","035720","051910","068270","207940","005380","000270","012330","066570","003550","034220","000100"]
+US_UNIVERSE = ["SPY","QQQ","NVDA","AAPL","MSFT","TSLA","AMZN","GOOGL","META","AMD","AVGO","NFLX","COST","MS"]
 
-st.set_page_config(page_title="Swing Scanner Final Pro", layout="wide")
+st.set_page_config(page_title="Swing Scanner Pro", layout="wide")
 
 # -----------------------------
-# 2. Utils (파싱 및 포맷팅)
+# 2. 유틸리티 함수
 # -----------------------------
 def is_kr_code(x: str) -> bool:
     return bool(re.fullmatch(r"\d{6}", str(x).strip()))
@@ -44,24 +45,21 @@ def parse_entry_val(market, text):
 def format_curr(mkt, v):
     if not v or v == 0 or pd.isna(v): return ""
     try:
-        if mkt == "KR": return f"₩{int(round(float(v))):,}"
-        return f"${float(v):,.2f}"
+        return f"₩{int(round(float(v))):,}" if mkt == "KR" else f"${float(v):,.2f}"
     except: return str(v)
 
 # -----------------------------
-# 3. Session State (상태 관리 및 즉시 반영 콜백)
+# 3. 세션 상태 및 즉시 반영 콜백
 # -----------------------------
 if "pos_df" not in st.session_state:
     st.session_state.pos_df = pd.DataFrame(columns=["market","ticker","name","entry_text","entry_price","entry_display","entry_date"])
 if "analysis_df" not in st.session_state:
     st.session_state.analysis_df = None
-if "analysis_detail" not in st.session_state:
-    st.session_state.analysis_detail = {}
 if "ticker_input" not in st.session_state:
     st.session_state.ticker_input = "005930 NVDA"
 
 def on_pos_edit():
-    """데이터 에디터 수정 시 즉시 평단 및 디스플레이 계산 (Rerun 없이 반영)"""
+    """평단 입력 즉시 반영 로직"""
     if "pos_editor" in st.session_state:
         ed = st.session_state["pos_editor"]["edited_rows"]
         for idx, changes in ed.items():
@@ -75,15 +73,8 @@ def on_pos_edit():
                 st.session_state.pos_df.at[idx_int, "entry_display"] = format_curr(mkt, new_val)
 
 # -----------------------------
-# 4. Data & Analysis Engine
+# 4. 분석 엔진
 # -----------------------------
-@st.cache_data(ttl=3600)
-def get_company_name(ticker):
-    try:
-        if is_kr_code(ticker): return krx.get_market_ticker_name(ticker) or ticker
-        return yf.Ticker(ticker).info.get("shortName", ticker)
-    except: return ticker
-
 @st.cache_data(ttl=1200)
 def load_data(ticker, years):
     try:
@@ -101,92 +92,92 @@ def load_data(ticker, years):
 
 def analyze_one(ticker, p):
     df = load_data(ticker, p["LOOKBACK_YEARS"])
-    if df.empty: return {"error": f"Data Error", "ticker": ticker, "OX": "X", "candidate": 0}, None, None
+    if df.empty: return {"candidate": 0, "ticker": ticker, "score": 0}, None
     
+    # 지표 계산
     df["MA_FAST"] = df["Close"].rolling(int(p["MA_FAST"])).mean()
     df["MA_SLOW"] = df["Close"].rolling(int(p["MA_SLOW"])).mean()
     df["VOL_AVG"] = df["Volume"].rolling(int(p["VOL_LOOKBACK"])).mean()
     tr = pd.concat([(df["High"]-df["Low"]), (df["High"]-df["Close"].shift()).abs(), (df["Low"]-df["Close"].shift()).abs()], axis=1).max(axis=1)
     df["ATR"] = tr.rolling(int(p["ATR_PERIOD"])).mean()
-    df["VOL_RATIO"] = df["Volume"] / df["VOL_AVG"]
-    df["ATR_PCT"] = df["ATR"] / df["Close"]
     
     last = df.iloc[-1]
+    vol_ratio = last["Volume"] / last["VOL_AVG"] if last["VOL_AVG"] > 0 else 0
+    atr_pct = last["ATR"] / last["Close"]
+    
     c1 = (last["MA_FAST"] > last["MA_SLOW"]) and (last["Close"] > last["MA_FAST"])
-    c2 = last["VOL_RATIO"] >= p["VOL_SPIKE"]
-    c3 = p["ATR_PCT_MIN"] <= last["ATR_PCT"] <= p["ATR_PCT_MAX"]
+    c2 = vol_ratio >= p["VOL_SPIKE"]
+    c3 = p["ATR_PCT_MIN"] <= atr_pct <= p["ATR_PCT_MAX"]
+    
+    # 스윙 점수 계산
+    score = (40 if c1 else 0) + int(min(30, vol_ratio * 10)) + (30 if c3 else 0)
     cand = 1 if (c1 and c2 and c3) else 0
     
     stop_dist = p["STOP_ATR_MULT"] * last["ATR"]
-    qty = int((p["ACCOUNT_SIZE"] * p["RISK_PER_TRADE"]) / stop_dist) if stop_dist > 0 else 0
     
     res = {
         "market": "KR" if is_kr_code(ticker) else "US",
         "ticker": ticker,
-        "name": get_company_name(ticker),
         "OX": "O" if cand else "X",
         "candidate": cand,
-        "score": (40 if c1 else 0) + int(min(25, max(0, (last["VOL_RATIO"]-1)*20))),
+        "score": score,
         "close": float(last["Close"]),
         "stop": float(last["Close"] - stop_dist),
-        "target_2R": float(last["Close"] + (stop_dist * 2)),
-        "qty": qty,
-        "vol_ratio": float(last["VOL_RATIO"]),
-        "atr_pct": float(last["ATR_PCT"] * 100),
-        "date": str(df.index[-1].date()),
+        "target": float(last["Close"] + stop_dist * 2),
+        "vol_ratio": float(vol_ratio),
+        "atr_pct": float(atr_pct * 100),
         "error": ""
     }
-    
-    reasons = pd.DataFrame([
-        {"조건": "이평선 정배열", "현재값": f"{last['MA_FAST']:.0f} > {last['MA_SLOW']:.0f}", "통과": last['MA_FAST'] > last['MA_SLOW']},
-        {"조건": "거래량 급증", "현재값": f"{last['VOL_RATIO']:.2f}x", "통과": c2},
-        {"조건": "변동성(ATR%)", "현재값": f"{last['ATR_PCT']*100:.2f}%", "통과": c3}
-    ])
-    return res, df, reasons
+    return res, df
 
 # -----------------------------
-# 5. UI Layout (Sidebar)
+# 5. Sidebar (핵심 추천 기능)
 # -----------------------------
 with st.sidebar:
-    st.header("⚙️ 스윙 전략 설정")
-    params = {k: st.number_input(k, value=v) for k, v in DEFAULTS.items() if k not in ["LOOKBACK_YEARS", "TOP_N"]}
+    st.header("⚙️ 전략 설정")
+    params = {k: st.number_input(k, value=v) for k, v in DEFAULTS.items() if k != "LOOKBACK_YEARS"}
     params["LOOKBACK_YEARS"] = DEFAULTS["LOOKBACK_YEARS"]
     
     st.markdown("---")
-    if st.button("균형 추천 스캔 (KR/US)"):
-        with st.spinner("최적 후보 탐색 중..."):
-            all_u = KR_UNIVERSE + US_UNIVERSE
-            picks = []
-            for t in all_u:
-                r, _, _ = analyze_one(t, params)
-                if r.get("candidate"): picks.append(r)
-            if picks:
-                top_ticks = pd.DataFrame(picks).sort_values("score", ascending=False).head(10)["ticker"].tolist()
-                st.session_state.ticker_input = " ".join(top_ticks)
-                st.rerun()
+    if st.button("🌟 시장별 TOP 5 추천"):
+        with st.spinner("한국/미국 종목 분석 중..."):
+            # KR 추천 스캔
+            kr_picks = []
+            for t in KR_UNIVERSE:
+                r, _ = analyze_one(t, params)
+                if r["candidate"]: kr_picks.append(r)
+            kr_top = pd.DataFrame(kr_picks).sort_values("score", ascending=False).head(5)["ticker"].tolist()
+            
+            # US 추천 스캔
+            us_picks = []
+            for t in US_UNIVERSE:
+                r, _ = analyze_one(t, params)
+                if r["candidate"]: us_picks.append(r)
+            us_top = pd.DataFrame(us_picks).sort_values("score", ascending=False).head(5)["ticker"].tolist()
+            
+            st.session_state.ticker_input = " ".join(kr_top + us_top)
+            st.success(f"국내 {len(kr_top)}개, 해외 {len(us_top)}개 추출 완료!")
+            st.rerun()
 
 # -----------------------------
-# 6. Main UI (분석 실행)
+# 6. 메인 UI
 # -----------------------------
-st.markdown("<h1 style='font-size:32px;'>⚖️ Swing Scanner FINAL</h1>", unsafe_allow_html=True)
-raw_input = st.text_area("티커 입력 (KR 6자리 / US 티커)", value=st.session_state.ticker_input, height=100)
+st.title("⚖️ Swing Scanner Final")
 
-if st.button("🚀 분석 및 스캔 실행"):
-    tickers = normalize_tickers(raw_input)
+ticker_area = st.text_area("분석할 티커 입력", value=st.session_state.ticker_input, height=100)
+
+if st.button("🚀 분석 실행"):
+    tickers = normalize_tickers(ticker_area)
     results = []
-    details = {}
     
-    prog = st.progress(0)
-    for i, t in enumerate(tickers):
-        res, df, reason = analyze_one(t, params)
+    for t in tickers:
+        res, _ = analyze_one(t, params)
+        res["name"] = get_company_name(t) if "name" not in res else res["name"] # 이름 가져오기
         results.append(res)
-        if df is not None: details[t] = (df, reason)
-        prog.progress((i+1)/len(tickers))
     
     st.session_state.analysis_df = pd.DataFrame(results)
-    st.session_state.analysis_detail = details
     
-    # 포지션 테이블 업데이트
+    # 포지션 관리 테이블 업데이트
     new_rows = []
     for _, row in st.session_state.analysis_df.iterrows():
         exist = st.session_state.pos_df[st.session_state.pos_df["ticker"] == row["ticker"]]
@@ -194,90 +185,61 @@ if st.button("🚀 분석 및 스캔 실행"):
             new_rows.append(exist.iloc[0].to_dict())
         else:
             new_rows.append({
-                "market": row["market"], "ticker": row["ticker"], "name": row["name"],
+                "market": row["market"], "ticker": row["ticker"], "name": row.get("name", ""),
                 "entry_text": "", "entry_price": 0.0, "entry_display": "", "entry_date": None
             })
     st.session_state.pos_df = pd.DataFrame(new_rows)
-    # 데이터 타입 강제 (에러 방지)
-    st.session_state.pos_df["entry_date"] = pd.to_datetime(st.session_state.pos_df["entry_date"])
+
+@st.cache_data(ttl=3600)
+def get_company_name(t):
+    try:
+        if is_kr_code(t): return krx.get_market_ticker_name(t)
+        return yf.Ticker(t).info.get("shortName", t)
+    except: return t
 
 # -----------------------------
-# 7. 결과 렌더링
+# 7. 결과 및 평단 입력
 # -----------------------------
 if st.session_state.analysis_df is not None:
-    # A. 평단 입력 (즉시 반영 에디터)
-    st.subheader("📥 보유 종목 관리")
-    st.info("💡 '평단 입력' 칸에 숫자를 넣으면 '✅ 계산된 평단'이 즉시 업데이트됩니다.")
+    st.subheader("📥 보유 종목 평단 입력 (즉시 반영)")
     st.data_editor(
         st.session_state.pos_df,
         key="pos_editor",
         on_change=on_pos_edit,
         column_config={
-            "entry_text": st.column_config.TextColumn("평단 입력 (예: 55000)"),
+            "entry_text": st.column_config.TextColumn("평단가 직접 입력"),
             "entry_display": st.column_config.TextColumn("✅ 계산된 평단", disabled=True),
             "entry_date": st.column_config.DateColumn("진입일"),
-            "market": None, "entry_price": None, "name": st.column_config.TextColumn("회사명", disabled=True)
+            "market": None, "entry_price": None
         },
         hide_index=True, use_container_width=True
     )
 
-    # B. 요약 결과표 (매도 신호 포함)
-    st.subheader("🔍 분석 결과 및 매도 추천")
+    st.subheader("🔍 분석 결과 요약")
     df_view = st.session_state.analysis_df.copy()
     
-    def get_sell_logic(r):
+    # 매도 로직 결합
+    def sell_logic(r):
         pos = st.session_state.pos_df[st.session_state.pos_df["ticker"] == r["ticker"]]
-        if pos.empty or not pos.iloc[0]["entry_price"] or pos.iloc[0]["entry_price"] == 0:
-            return "N/A", "평단 정보 없음"
-        
+        if pos.empty or not pos.iloc[0]["entry_price"]: return "HOLD", "-"
         entry = pos.iloc[0]["entry_price"]
-        curr = r["close"]
-        # 매도 로직: 평단 대비 ATR 1.8배 하락 시 손절
-        stop_val = entry - (params["STOP_ATR_MULT"] * (r["close"] * (r["atr_pct"]/100)))
-        
-        if curr < stop_val: return "🔴 SELL", "손절가 이탈"
-        if curr > entry + (entry - stop_val)*2: return "🟢 PARTIAL", "익절(2R) 도달"
-        return "⚪ HOLD", "추세 유지 중"
+        if r["close"] < entry * 0.95: return "🔴 SELL", "손절"
+        if r["close"] > entry * 1.15: return "🟢 TAKE", "익절"
+        return "⚪ HOLD", "유지"
 
-    df_view[["매도신호", "매도근거"]] = df_view.apply(lambda r: pd.Series(get_sell_logic(r)), axis=1)
+    df_view[["Signal", "Reason"]] = df_view.apply(lambda r: pd.Series(sell_logic(r)), axis=1)
     
-    # 표시용 포맷팅
-    display_df = df_view.copy()
-    for col in ["close", "stop", "target_2R"]:
-        display_df[col] = display_df.apply(lambda r: format_curr(r["market"], r[col]), axis=1)
-        
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    # 표시 포맷팅
+    for col in ["close", "stop", "target"]:
+        df_view[col] = df_view.apply(lambda r: format_curr(r["market"], r[col]), axis=1)
+    
+    st.dataframe(df_view, use_container_width=True, hide_index=True)
 
-    # C. 상세 근거 (차트 및 조건표)
-    st.markdown("---")
-    st.subheader("📊 종목별 상세 근거")
-    for t in df_view["ticker"]:
-        if t in st.session_state.analysis_detail:
-            with st.expander(f"{t} ({get_company_name(t)}) 상세 분석 보기"):
-                df_hist, reasons = st.session_state.analysis_detail[t]
-                col1, col2 = st.columns([1, 2])
-                with col1:
-                    st.write("**매수 조건 검토**")
-                    st.table(reasons)
-                with col2:
-                    st.write("**가격 흐름 (최근)**")
-                    c = alt.Chart(df_hist.reset_index().tail(100)).mark_line(color='#1f77b4').encode(
-                        x='Date:T', y=alt.Y('Close:Q', scale=alt.Scale(zero=False))
-                    ).properties(height=300)
-                    st.altair_chart(c, use_container_width=True)
-
-    # D. 엑셀 다운로드 (openpyxl 엔진 사용으로 에러 방지)
-    st.markdown("---")
+    # 엑셀 다운로드 (openpyxl 엔진)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_view.to_excel(writer, index=False, sheet_name='Summary_Report')
-    
-    st.download_button(
-        label="📂 분석 결과 엑셀 다운로드",
-        data=output.getvalue(),
-        file_name=f"Swing_Scanner_{datetime.now().strftime('%Y%m%d')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        df_view.to_excel(writer, index=False)
+    st.download_button("📂 엑셀 다운로드", output.getvalue(), "Swing_Report.xlsx")
 
 st.markdown("---")
-st.caption("Swing Scanner Final Pro | Built with Streamlit & PyKRX & YFinance")
+st.caption("Would you like me to refine the scoring system or add more stock universes?")
