@@ -140,11 +140,11 @@ def analyze_one(ticker, p):
 with st.sidebar:
     st.header("⚙️ 전략 파라미터 설정")
     p = {}
-    p["MA_FAST"] = st.number_input("단기 이평선", value=DEFAULTS["MA_FAST"], help="추세 판단용 단기 기간")
-    p["MA_SLOW"] = st.number_input("장기 이평선", value=DEFAULTS["MA_SLOW"], help="대추세 판단용 장기 기간")
-    p["ATR_PERIOD"] = st.number_input("ATR 기간", value=DEFAULTS["ATR_PERIOD"])
+    p["MA_FAST"] = st.number_input("단기 이평선", value=DEFAULTS["MA_FAST"], help="단기 추세선 (예: 20일)")
+    p["MA_SLOW"] = st.number_input("장기 이평선", value=DEFAULTS["MA_SLOW"], help="장기 추세선 (예: 60일)")
+    p["ATR_PERIOD"] = st.number_input("ATR 기간", value=DEFAULTS["ATR_PERIOD"], help="변동성 평균 기간")
     p["VOL_LOOKBACK"] = st.number_input("거래량 평균 기간", value=DEFAULTS["VOL_LOOKBACK"])
-    p["VOL_SPIKE"] = st.number_input("거래량 급증 배수", value=DEFAULTS["VOL_SPIKE"])
+    p["VOL_SPIKE"] = st.number_input("거래량 급증 배수", value=DEFAULTS["VOL_SPIKE"], help="평균 대비 돌파 배수")
     p["ATR_PCT_MIN"] = st.number_input("최소 변동성(ATR%)", value=DEFAULTS["ATR_PCT_MIN"], format="%.3f")
     p["ATR_PCT_MAX"] = st.number_input("최대 변동성(ATR%)", value=DEFAULTS["ATR_PCT_MAX"], format="%.3f")
     p["STOP_ATR_MULT"] = st.number_input("손절 ATR 배수", value=DEFAULTS["STOP_ATR_MULT"])
@@ -161,9 +161,18 @@ st.title("⚖️ Swing Scanner Final Pro")
 col_btn1, col_btn2 = st.columns([1, 4])
 with col_btn1:
     if st.button("🌟 국산5+외산5 추천"):
-        with st.spinner("분석 중..."):
-            kr_top = pd.DataFrame([analyze_one(t, params)[0] for t in KR_UNIVERSE if analyze_one(t, params)[0]["candidate"]]).sort_values("score", ascending=False).head(5)["ticker"].tolist()
-            us_top = pd.DataFrame([analyze_one(t, params)[0] for t in US_UNIVERSE if analyze_one(t, params)[0]["candidate"]]).sort_values("score", ascending=False).head(5)["ticker"].tolist()
+        with st.spinner("조건에 맞는 종목 스캔 중..."):
+            # KR 추천 (에러 방지용 빈 리스트 체크 포함)
+            kr_candidates = [analyze_one(t, params)[0] for t in KR_UNIVERSE]
+            kr_filtered = [x for x in kr_candidates if x["candidate"] == 1]
+            kr_top = pd.DataFrame(kr_filtered).sort_values("score", ascending=False).head(5)["ticker"].tolist() if kr_filtered else []
+            
+            # US 추천
+            us_candidates = [analyze_one(t, params)[0] for t in US_UNIVERSE]
+            us_filtered = [x for x in us_candidates if x["candidate"] == 1]
+            us_top = pd.DataFrame(us_filtered).sort_values("score", ascending=False).head(5)["ticker"].tolist() if us_filtered else []
+            
+            # 비트코인 상시 포함하여 업데이트
             st.session_state.ticker_input = " ".join(["BTC-USD"] + kr_top + us_top)
             st.rerun()
 
@@ -191,7 +200,7 @@ if st.button("🚀 분석 실행", type="primary"):
     st.session_state.pos_df["entry_date"] = pd.to_datetime(st.session_state.pos_df["entry_date"])
 
 # -----------------------------
-# 7. 결과 화면 및 엑셀 다운로드 로직
+# 7. 결과 화면 및 엑셀 다운로드
 # -----------------------------
 if st.session_state.analysis_df is not None:
     st.subheader("📥 보유 종목 평단 관리")
@@ -216,30 +225,22 @@ if st.session_state.analysis_df is not None:
         if curr > entry * 1.15: return "🟢 TAKE", "익절", profit_pct
         return "⚪ HOLD", "유지", profit_pct
 
-    signal_results = df_view.apply(lambda r: pd.Series(get_signal_info(r)), axis=1)
-    df_view[["Signal", "Reason", "Profit%"]] = signal_results
+    sig_data = df_view.apply(lambda r: pd.Series(get_signal_info(r)), axis=1)
+    df_view[["Signal", "Reason", "Profit%"]] = sig_data
     
-    # 표시용 데이터프레임
     disp_df = df_view.copy()
     for col in ["close", "stop", "target"]:
         disp_df[col] = disp_df.apply(lambda r: format_curr(r["market"], r[col]), axis=1)
     st.dataframe(disp_df, use_container_width=True, hide_index=True)
 
-    # --- 엑셀 통합 다운로드 기능 (보유종목 포함) ---
+    # 엑셀 다운로드 (보고서 + 보유평단 포함)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # 시트 1: 분석 결과 요약
         df_view.to_excel(writer, index=False, sheet_name='분석_결과')
-        
-        # 시트 2: 보유 종목 및 평단 관리 현황
-        export_pos_df = st.session_state.pos_df.copy()
-        # 현재가 및 수익률 정보 결합
-        export_pos_df = export_pos_df.merge(df_view[["ticker", "close", "Profit%"]], on="ticker", how="left")
-        export_pos_df.to_excel(writer, index=False, sheet_name='나의_포트폴리오')
+        export_pos = st.session_state.pos_df.merge(df_view[["ticker", "close", "Profit%"]], on="ticker", how="left")
+        export_pos.to_excel(writer, index=False, sheet_name='나의_포트폴리오')
     
-    st.download_button(
-        label="📂 분석 결과 + 포트폴리오 엑셀 다운로드",
-        data=output.getvalue(),
-        file_name=f"Swing_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    st.download_button("📂 분석 결과 + 포트폴리오 엑셀 다운로드", output.getvalue(), f"Swing_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
+
+st.markdown("---")
+st.caption("Swing Scanner Final Pro | 추천 종목이 없을 때 발생하는 정렬 오류를 수정했습니다.")
