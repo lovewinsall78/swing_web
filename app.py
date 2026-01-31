@@ -139,11 +139,21 @@ def analyze_one(ticker, p):
     return res, df
 
 # -----------------------------
-# 5. Sidebar (Params)
+# 5. Sidebar (Params with Descriptions)
 # -----------------------------
 with st.sidebar:
     st.header("⚙️ 전략 파라미터 설정")
-    p = {k: st.number_input(k, value=v) for k, v in DEFAULTS.items() if k != "LOOKBACK_YEARS"}
+    p = {}
+    p["MA_FAST"] = st.number_input("단기 이평선", value=DEFAULTS["MA_FAST"], help="단기 추세 판단 기간 (기본 20일)")
+    p["MA_SLOW"] = st.number_input("장기 이평선", value=DEFAULTS["MA_SLOW"], help="장기 추세 판단 기간 (기본 60일)")
+    p["ATR_PERIOD"] = st.number_input("ATR 기간", value=DEFAULTS["ATR_PERIOD"], help="변동성 산출 기간")
+    p["VOL_LOOKBACK"] = st.number_input("거래량 평균 기간", value=DEFAULTS["VOL_LOOKBACK"], help="평균 거래량 산출 기간")
+    p["VOL_SPIKE"] = st.number_input("거래량 급증 배수", value=DEFAULTS["VOL_SPIKE"], help="평균 대비 돌파 배수")
+    p["ATR_PCT_MIN"] = st.number_input("최소 변동성(ATR%)", value=DEFAULTS["ATR_PCT_MIN"], format="%.3f", help="너무 조용한 종목 제외")
+    p["ATR_PCT_MAX"] = st.number_input("최대 변동성(ATR%)", value=DEFAULTS["ATR_PCT_MAX"], format="%.3f", help="너무 위험한 종목 제외")
+    p["STOP_ATR_MULT"] = st.number_input("손절 ATR 배수", value=DEFAULTS["STOP_ATR_MULT"], help="현재가에서 ATR의 몇 배를 손절가로 잡을지")
+    p["ACCOUNT_SIZE"] = st.number_input("총 투자 원금", value=DEFAULTS["ACCOUNT_SIZE"])
+    p["RISK_PER_TRADE"] = st.number_input("회당 리스크(%)", value=DEFAULTS["RISK_PER_TRADE"], format="%.2f")
     p["LOOKBACK_YEARS"] = DEFAULTS["LOOKBACK_YEARS"]
     params = p
 
@@ -156,10 +166,16 @@ col_btn1, col_btn2 = st.columns([1, 4])
 with col_btn1:
     if st.button("🌟 국장5+미장5 추천"):
         with st.spinner("최적 종목 스캔 중..."):
-            kr_list = [analyze_one(t, params)[0] for t in KR_UNIVERSE]
-            kr_top = pd.DataFrame([x for x in kr_list if x["candidate"]]).sort_values("score", ascending=False).head(5)["ticker"].tolist()
-            us_list = [analyze_one(t, params)[0] for t in US_UNIVERSE]
-            us_top = pd.DataFrame([x for x in us_list if x["candidate"]]).sort_values("score", ascending=False).head(5)["ticker"].tolist()
+            # 에러 방지: 데이터가 있는 경우에만 정렬 실행
+            kr_raw = [analyze_one(t, params)[0] for t in KR_UNIVERSE]
+            kr_filtered = [x for x in kr_raw if x["candidate"]]
+            kr_top = pd.DataFrame(kr_filtered).sort_values("score", ascending=False).head(5)["ticker"].tolist() if kr_filtered else []
+            
+            us_raw = [analyze_one(t, params)[0] for t in US_UNIVERSE]
+            us_filtered = [x for x in us_raw if x["candidate"]]
+            us_top = pd.DataFrame(us_filtered).sort_values("score", ascending=False).head(5)["ticker"].tolist() if us_filtered else []
+            
+            # 비트코인 상시 포함
             st.session_state.ticker_input = " ".join(["BTC-USD"] + kr_top + us_top)
             st.session_state.msg = f"✅ 추천 완료: 국장 {len(kr_top)}개, 미장 {len(us_top)}개 (비트코인 포함)"
             st.rerun()
@@ -194,13 +210,11 @@ if st.button("🚀 분석 실행", type="primary"):
 # 7. 결과 및 차트 표시
 # -----------------------------
 if st.session_state.analysis_df is not None:
-    # 7-1. 평단 관리
     st.subheader("📥 보유 종목 평단 관리")
     st.data_editor(st.session_state.pos_df, key="pos_editor", on_change=on_pos_edit,
         column_config={"entry_text": "평단가 입력", "entry_display": "✅ 계산된 평단", "entry_date": st.column_config.DateColumn("진입일"), "name": "종목명"},
         hide_index=True, use_container_width=True)
 
-    # 7-2. 분석표
     st.subheader("🔍 분석 결과 및 매도 추천")
     df_view = st.session_state.analysis_df.copy()
     def get_sig(r):
@@ -215,8 +229,7 @@ if st.session_state.analysis_df is not None:
     for c in ["close", "stop", "target"]: disp[c] = disp.apply(lambda r: format_curr(r["market"], r[c]), axis=1)
     st.dataframe(disp, use_container_width=True, hide_index=True)
 
-    # 7-3. 차트 섹션 (신규 추가)
-    st.subheader("📊 종목별 추세 차트 (최근 120일)")
+    st.subheader("📊 종목별 추세 및 가이드라인 (최근 120일)")
     tabs = st.tabs([f"{row['name']} ({row['ticker']})" for _, row in df_view.iterrows()])
     for i, (_, row) in enumerate(df_view.iterrows()):
         with tabs[i]:
@@ -224,13 +237,19 @@ if st.session_state.analysis_df is not None:
             if df_chart is not None:
                 c_data = df_chart.tail(120).reset_index()
                 base = alt.Chart(c_data).encode(x=alt.X('Date:T', title='날짜'))
-                line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', title='가격', scale=alt.Scale(zero=False)))
+                
+                # 라인: 가격, 이평선
+                price_line = base.mark_line(color='#1f77b4').encode(y=alt.Y('Close:Q', scale=alt.Scale(zero=False)))
                 ma20 = base.mark_line(color='orange', strokeDash=[5,5]).encode(y='MA_FAST:Q')
                 ma60 = base.mark_line(color='red', strokeDash=[2,2]).encode(y='MA_SLOW:Q')
-                st.altair_chart((line + ma20 + ma60).properties(height=300), use_container_width=True)
-            else: st.warning("차트 데이터를 불러올 수 없습니다.")
+                
+                # 가이드라인: 손절가, 목표가
+                stop_line = alt.Chart(pd.DataFrame({'y': [row['stop']]})).mark_rule(color='red', strokeDash=[4,4]).encode(y='y:Q')
+                target_line = alt.Chart(pd.DataFrame({'y': [row['target']]})).mark_rule(color='green', strokeDash=[4,4]).encode(y='y:Q')
+                
+                st.altair_chart((price_line + ma20 + ma60 + stop_line + target_line).properties(height=350), use_container_width=True)
+            else: st.warning("데이터가 부족합니다.")
 
-    # 7-4. 엑셀 다운로드
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_view.to_excel(writer, index=False, sheet_name='분석_결과')
@@ -238,4 +257,4 @@ if st.session_state.analysis_df is not None:
     st.download_button("📂 분석 결과 + 포트폴리오 엑셀 다운로드", output.getvalue(), f"Swing_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
 st.markdown("---")
-st.caption("Swing Scanner Final Pro | 초기 기능 검수 완료 + 탭 형태의 종목별 차트 기능 추가")
+st.caption("Swing Scanner Final Pro | 정렬 에러 수정, 메뉴 설명 복구, 차트 가이드라인 추가 완료")
