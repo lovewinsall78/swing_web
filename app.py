@@ -140,11 +140,11 @@ def analyze_one(ticker, p):
 with st.sidebar:
     st.header("⚙️ 전략 파라미터 설정")
     p = {}
-    p["MA_FAST"] = st.number_input("단기 이평선", value=DEFAULTS["MA_FAST"], help="단기 추세선 (예: 20일)")
-    p["MA_SLOW"] = st.number_input("장기 이평선", value=DEFAULTS["MA_SLOW"], help="장기 추세선 (예: 60일)")
-    p["ATR_PERIOD"] = st.number_input("ATR 기간", value=DEFAULTS["ATR_PERIOD"], help="변동성 평균 기간")
+    p["MA_FAST"] = st.number_input("단기 이평선", value=DEFAULTS["MA_FAST"], help="추세 판단용")
+    p["MA_SLOW"] = st.number_input("장기 이평선", value=DEFAULTS["MA_SLOW"], help="대추세 판단용")
+    p["ATR_PERIOD"] = st.number_input("ATR 기간", value=DEFAULTS["ATR_PERIOD"])
     p["VOL_LOOKBACK"] = st.number_input("거래량 평균 기간", value=DEFAULTS["VOL_LOOKBACK"])
-    p["VOL_SPIKE"] = st.number_input("거래량 급증 배수", value=DEFAULTS["VOL_SPIKE"], help="평균 대비 돌파 배수")
+    p["VOL_SPIKE"] = st.number_input("거래량 급증 배수", value=DEFAULTS["VOL_SPIKE"])
     p["ATR_PCT_MIN"] = st.number_input("최소 변동성(ATR%)", value=DEFAULTS["ATR_PCT_MIN"], format="%.3f")
     p["ATR_PCT_MAX"] = st.number_input("최대 변동성(ATR%)", value=DEFAULTS["ATR_PCT_MAX"], format="%.3f")
     p["STOP_ATR_MULT"] = st.number_input("손절 ATR 배수", value=DEFAULTS["STOP_ATR_MULT"])
@@ -158,21 +158,26 @@ with st.sidebar:
 # -----------------------------
 st.title("⚖️ Swing Scanner Final Pro")
 
+# 추천 버튼 및 비트코인 상시 포함 로직 수정
 col_btn1, col_btn2 = st.columns([1, 4])
 with col_btn1:
     if st.button("🌟 국산5+외산5 추천"):
-        with st.spinner("조건에 맞는 종목 스캔 중..."):
-            # KR 추천 (에러 방지용 빈 리스트 체크 포함)
-            kr_candidates = [analyze_one(t, params)[0] for t in KR_UNIVERSE]
-            kr_filtered = [x for x in kr_candidates if x["candidate"] == 1]
-            kr_top = pd.DataFrame(kr_filtered).sort_values("score", ascending=False).head(5)["ticker"].tolist() if kr_filtered else []
+        with st.spinner("최적 종목 스캔 중..."):
+            # 한국 시장 분석
+            kr_list = []
+            for t in KR_UNIVERSE:
+                res, _ = analyze_one(t, params)
+                if res["candidate"]: kr_list.append(res)
+            kr_top = pd.DataFrame(kr_list).sort_values("score", ascending=False).head(5)["ticker"].tolist() if kr_list else []
             
-            # US 추천
-            us_candidates = [analyze_one(t, params)[0] for t in US_UNIVERSE]
-            us_filtered = [x for x in us_candidates if x["candidate"] == 1]
-            us_top = pd.DataFrame(us_filtered).sort_values("score", ascending=False).head(5)["ticker"].tolist() if us_filtered else []
+            # 미국 시장 분석
+            us_list = []
+            for t in US_UNIVERSE:
+                res, _ = analyze_one(t, params)
+                if res["candidate"]: us_list.append(res)
+            us_top = pd.DataFrame(us_list).sort_values("score", ascending=False).head(5)["ticker"].tolist() if us_list else []
             
-            # 비트코인 상시 포함하여 업데이트
+            # 비트코인 필수 포함하여 업데이트
             st.session_state.ticker_input = " ".join(["BTC-USD"] + kr_top + us_top)
             st.rerun()
 
@@ -200,7 +205,7 @@ if st.button("🚀 분석 실행", type="primary"):
     st.session_state.pos_df["entry_date"] = pd.to_datetime(st.session_state.pos_df["entry_date"])
 
 # -----------------------------
-# 7. 결과 화면 및 엑셀 다운로드
+# 7. 결과 및 엑셀 통합 다운로드
 # -----------------------------
 if st.session_state.analysis_df is not None:
     st.subheader("📥 보유 종목 평단 관리")
@@ -243,4 +248,4 @@ if st.session_state.analysis_df is not None:
     st.download_button("📂 분석 결과 + 포트폴리오 엑셀 다운로드", output.getvalue(), f"Swing_Report_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
 st.markdown("---")
-st.caption("Swing Scanner Final Pro | 추천 종목이 없을 때 발생하는 정렬 오류를 수정했습니다.")
+st.caption("Swing Scanner Final Pro | 추천 기능 및 비트코인 자동 포함 로직을 수정했습니다.")
